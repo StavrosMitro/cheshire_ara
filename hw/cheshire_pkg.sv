@@ -10,8 +10,6 @@
 
 package cheshire_pkg;
 
-  import cheshire_addrmap_pkg::*;
-
   ///////////
   //  SoC  //
   ///////////
@@ -29,9 +27,9 @@ package cheshire_pkg;
 
   // Parameters defined by generated hardware (regenerate to adapt)
   localparam int unsigned SpihNumCs       = spi_host_reg_pkg::NumCS - 1;  // Last CS is dummy
-  localparam int unsigned SlinkNumChan    = slink_reg_pkg::NumChannels;
-  localparam int unsigned SlinkNumLanes   = slink_reg_pkg::NumLanes;
-  localparam int unsigned SlinkMaxClkDiv  = 1 << slink_reg_pkg::Log2MaxClkDiv;
+  localparam int unsigned SlinkNumChan    = serial_link_single_channel_reg_pkg::NumChannels;
+  localparam int unsigned SlinkNumLanes   = serial_link_single_channel_reg_pkg::NumBits/2;
+  localparam int unsigned SlinkMaxClkDiv  = 1 << serial_link_single_channel_reg_pkg::Log2MaxClkDiv;
   localparam int unsigned ClintNumCores   = clint_reg_pkg::NumCores;
   localparam int unsigned UsbNumPorts     = spinal_usb_ohci_pkg::NumPhyPorts;
 
@@ -62,7 +60,6 @@ package cheshire_pkg;
   typedef bit [63:0] doub_bt;
   typedef bit [ 9:0] dw_bt;   // data widths
   typedef bit [ 5:0] aw_bt;   // address, ID widths or small buffers
-  typedef bit [cheshire_soc_regs_pkg::CHESHIRE_SOC_REGS_MIN_ADDR_WIDTH-1:0] reg_aw_bt; // Address widths for reg APB bus
 
   // Externally controllable parameters
   typedef struct packed {
@@ -76,6 +73,18 @@ package cheshire_pkg;
     // control the CIE region's size and whether it abuts with the top or bottom of this range.
     doub_bt Cva6ExtCieLength;
     bit     Cva6ExtCieOnTop;
+    // K5 3a: gates whether the non-CIE range above (the DRAM/ExtNonCI non-
+    // idempotent rule, index 0 in NonIdempotentAddrBase/Length) is actually
+    // marked non-idempotent. Default 1 preserves every existing target's
+    // behavior unchanged. Only the zcu102 target sets this 0 (in
+    // gen_cheshire_xilinx_cfg(), target/xilinx/src/cheshire_top_xilinx.sv),
+    // because on that board .text is loaded into this exact DRAM range and
+    // cva6_icache.sv's speculative-fetch gate (spec && addr_ni) deadlocks
+    // permanently when a blocked fetch is itself the branch whose resolution
+    // would clear spec -- see AGENT_NOTES_ZCU102.md SS17. Any instance that
+    // genuinely attaches non-idempotent I/O in [0x4000_0000,0x8000_0000)
+    // must leave this at its default.
+    bit     Cva6NiDramRule;
     // Hart parameters
     bit [MaxCoresWidth-1:0] NumCores;
     doub_bt NumExtIrqHarts;
@@ -141,6 +150,7 @@ package cheshire_pkg;
     bit     Clic;
     bit     IrqRouter;
     bit     BusErr;
+    bit     Ara;
     // Parameters for Debug Module
     jtag_idcode_t DbgIdCode;
     dw_bt   DbgMaxReqs;
@@ -199,11 +209,9 @@ package cheshire_pkg;
     aw_bt   AxiRtNumAddrRegions;
     bit     AxiRtCutPaths;
     bit     AxiRtEnableChecks;
-    // Parameters for CLIC
-    bit     ClicVsclic;
-    bit     ClicVsprio;
-    byte_bt ClicNumVsctxts;
-    aw_bt   ClicPrioWidth;
+    // Parameters for Ara
+    byte_bt AraNrLanes;
+    word_bt AraVLEN;
   } cheshire_cfg_t;
 
   //////////////////
@@ -280,8 +288,19 @@ package cheshire_pkg;
     return cfg.LlcSetAssoc * cfg.LlcNumLines * cfg.LlcNumBlocks * cfg.AxiDataWidth / 8;
   endfunction
 
+  // Static addresses (defined here only if multiply used)
+  localparam doub_bt AmDbg    = 'h0000_0000;  // Base of AXI peripherals
+  localparam doub_bt AmBrom   = 'h0200_0000;  // Base of reg peripherals
+  localparam doub_bt AmRegs   = 'h0300_0000;
+  localparam doub_bt AmLlc    = 'h0300_1000;
+  localparam doub_bt AmSlink  = 'h0300_6000;
+  localparam doub_bt AmBusErr = 'h0300_9000;
+  localparam doub_bt AmSpm    = 'h1000_0000;  // Cached region at bottom, uncached on top
+  localparam doub_bt AmClic   = 'h0800_0000;
+
   // Static masks
-  localparam doub_bt AmSpmRegionMask = 'h03FF_FFFF;
+  localparam doub_bt AmSpmBaseUncached = 'h1400_0000;
+  localparam doub_bt AmSpmRegionMask   = 'h03FF_FFFF;
 
   // Reg bus error unit indices
   localparam int unsigned RegBusErrVga        = 0;
@@ -292,6 +311,7 @@ package cheshire_pkg;
   typedef struct packed {
     aw_bt [2**MaxCoresWidth-1:0] cores;
     aw_bt dbg;
+    aw_bt ara;
     aw_bt dma;
     aw_bt slink;
     aw_bt vga;
@@ -305,6 +325,7 @@ package cheshire_pkg;
     int unsigned i = 0;
     for (int j = 0; j < cfg.NumCores; j++) begin ret.cores[i] = i; i++; end
     ret.dbg = i;
+    if (cfg.Ara)        begin i++; ret.ara   = i; end
     if (cfg.Dma)        begin i++; ret.dma   = i; end
     if (cfg.SerialLink) begin i++; ret.slink = i; end
     if (cfg.Vga)        begin i++; ret.vga   = i; end
@@ -340,8 +361,8 @@ package cheshire_pkg;
     doub_bt SizeSpm = get_llc_size(cfg);
     axi_out_t ret = '{dbg: 0, reg_demux: 1, default: '0};
     int unsigned i = 1, r = 1;
-    ret.map[0] = '{0, EXTROM_BASE_ADDR,   EXTROM_BASE_ADDR   + EXTROM_SIZE};
-    ret.map[1] = '{1, BOOTROM_BASE_ADDR,  'h0C00_0000};
+    ret.map[0] = '{0, AmDbg,   AmDbg + 'h40000};
+    ret.map[1] = '{1, 'h0200_0000, 'h0C00_0000};
     // Whether we have an LLC or a bypass, the output port is has its
     // own Xbar output with the specified region iff it is connected.
     if (cfg.LlcOutConnect) begin i++; r++; ret.llc = i;
@@ -351,10 +372,10 @@ package cheshire_pkg;
     // We map both the cached and uncached regions.
     if (cfg.LlcNotBypass) begin
       ret.spm = i;
-      r++; ret.map[r] = '{i, SPM_BASE_ADDR,     SPM_BASE_ADDR     + SizeSpm};
-      r++; ret.map[r] = '{i, SPM_UNC_BASE_ADDR, SPM_UNC_BASE_ADDR + SizeSpm};
+      r++; ret.map[r] = '{i, AmSpm, AmSpm + SizeSpm};
+      r++; ret.map[r] = '{i, AmSpm + 'h0400_0000, AmSpm + 'h0400_0000 + SizeSpm};
     end
-    if (cfg.Dma)          begin i++; r++; ret.dma = i; ret.map[r] = '{i, DMA_BASE_ADDR, DMA_BASE_ADDR + DMA_SIZE}; end
+    if (cfg.Dma)          begin i++; r++; ret.dma = i; ret.map[r] = '{i, 'h0100_0000, 'h0100_1000}; end
     if (cfg.SerialLink)   begin i++; r++; ret.slink = i;
         ret.map[r] = '{i, cfg.SlinkRegionStart, cfg.SlinkRegionEnd}; end
     // External port indices start after internal ones
@@ -398,32 +419,31 @@ package cheshire_pkg;
     aw_bt ext_base;
     aw_bt num_out;
     aw_bt num_rules;
-    bit [2**$bits(aw_bt)-1:0] apb_mask;  // Bit i set iff reg-bus port i uses APB
     arul_t [aw_bt'(-1):0] map;
   } reg_out_t;
 
   function automatic reg_out_t gen_reg_out(cheshire_cfg_t cfg);
     reg_out_t ret = '{err: 0, clint: 1, plic: 2, regs: 3, default: '0};
     int unsigned i = 3, r = 2;
-    ret.map[0] = '{1, CLINT_BASE_ADDR, CLINT_BASE_ADDR + CLINT_SIZE};
-    ret.map[1] = '{2, PLIC_BASE_ADDR,  PLIC_BASE_ADDR  + PLIC_SIZE};
-    ret.map[2] = '{3, REGS_BASE_ADDR,  REGS_BASE_ADDR  + REGS_SIZE};
-    if (cfg.Bootrom)      begin i++; ret.bootrom    = i; r++; ret.map[r] = '{i, BOOTROM_BASE_ADDR,    BOOTROM_BASE_ADDR    + BOOTROM_SIZE }; end
-    if (cfg.LlcNotBypass) begin i++; ret.llc        = i; r++; ret.map[r] = '{i, LLC_BASE_ADDR,        LLC_BASE_ADDR        + LLC_SIZE}; end
-    if (cfg.Uart)         begin i++; ret.uart       = i; r++; ret.map[r] = '{i, UART_BASE_ADDR,       UART_BASE_ADDR       + UART_SIZE}; end
-    if (cfg.I2c)          begin i++; ret.i2c        = i; r++; ret.map[r] = '{i, I2C_BASE_ADDR,        I2C_BASE_ADDR        + I2C_SIZE}; end
-    if (cfg.SpiHost)      begin i++; ret.spi_host   = i; r++; ret.map[r] = '{i, SPIH_BASE_ADDR,       SPIH_BASE_ADDR       + SPIH_SIZE}; end
-    if (cfg.Gpio)         begin i++; ret.gpio       = i; r++; ret.map[r] = '{i, GPIO_BASE_ADDR,       GPIO_BASE_ADDR       + GPIO_SIZE}; end
-    if (cfg.SerialLink)   begin i++; ret.slink      = i; r++; ret.map[r] = '{i, SLINK_BASE_ADDR,      SLINK_BASE_ADDR      + SLINK_SIZE}; end
-    if (cfg.Vga)          begin i++; ret.vga        = i; r++; ret.map[r] = '{i, VGA_BASE_ADDR,        VGA_BASE_ADDR        + VGA_SIZE}; end
-    if (cfg.Usb)          begin i++; ret.usb        = i; r++; ret.map[r] = '{i, USB_BASE_ADDR,        USB_BASE_ADDR        + USB_SIZE}; end
-    if (cfg.IrqRouter)    begin i++; ret.irq_router = i; r++; ret.map[r] = '{i, IRQ_ROUTER_BASE_ADDR, IRQ_ROUTER_BASE_ADDR + IRQ_ROUTER_SIZE}; end
-    if (cfg.AxiRt)        begin i++; ret.axirt      = i; r++; ret.map[r] = '{i, AXIRT_BASE_ADDR,      AXIRT_BASE_ADDR      + AXIRT_SIZE}; end
+    ret.map[0] = '{1, 'h0204_0000, 'h0208_0000};
+    ret.map[1] = '{2, 'h0400_0000, 'h0800_0000};
+    ret.map[2] = '{3, AmRegs,  AmRegs + 'h1000};
+    if (cfg.Bootrom)      begin i++; ret.bootrom    = i; r++; ret.map[r] = '{i, AmBrom, AmBrom + 'h40000}; end
+    if (cfg.LlcNotBypass) begin i++; ret.llc        = i; r++; ret.map[r] = '{i, AmLlc,    AmLlc + 'h1000}; end
+    if (cfg.Uart)         begin i++; ret.uart       = i; r++; ret.map[r] = '{i, 'h0300_2000, 'h0300_3000}; end
+    if (cfg.I2c)          begin i++; ret.i2c        = i; r++; ret.map[r] = '{i, 'h0300_3000, 'h0300_4000}; end
+    if (cfg.SpiHost)      begin i++; ret.spi_host   = i; r++; ret.map[r] = '{i, 'h0300_4000, 'h0300_5000}; end
+    if (cfg.Gpio)         begin i++; ret.gpio       = i; r++; ret.map[r] = '{i, 'h0300_5000, 'h0300_6000}; end
+    if (cfg.SerialLink)   begin i++; ret.slink      = i; r++; ret.map[r] = '{i, AmSlink, AmSlink +'h1000}; end
+    if (cfg.Vga)          begin i++; ret.vga        = i; r++; ret.map[r] = '{i, 'h0300_7000, 'h0300_8000}; end
+    if (cfg.Usb)          begin i++; ret.usb        = i; r++; ret.map[r] = '{i, 'h0300_8000, 'h0300_9000}; end
+    if (cfg.IrqRouter)    begin i++; ret.irq_router = i; r++; ret.map[r] = '{i, 'h0208_0000, 'h020c_0000}; end
+    if (cfg.AxiRt)        begin i++; ret.axirt      = i; r++; ret.map[r] = '{i, 'h020c_0000, 'h0210_0000}; end
     if (cfg.Clic) for (int j = 0; j < cfg.NumCores; j++) begin
-      i++; ret.clic[j]    = i; r++; ret.map[r] = '{i, CLIC_BASE_ADDR + j*CLIC_SIZE, CLIC_BASE_ADDR + (j+1)*CLIC_SIZE};
+      i++; ret.clic[j]    = i; r++; ret.map[r] = '{i, AmClic + j*'h40000, AmClic + (j+1)*'h40000};
     end
     if (cfg.BusErr) for (int j = 0; j < 2 + cfg.NumCores; j++) begin
-      i++; ret.bus_err[j] = i; r++; ret.map[r] = '{i, BUS_ERR_BASE_ADDR + j*BUS_ERR_SIZE, BUS_ERR_BASE_ADDR + (j+1)*BUS_ERR_SIZE};
+      i++; ret.bus_err[j] = i; r++; ret.map[r] = '{i, AmBusErr + j*'h40,  AmBusErr + (j+1)*'h40};
     end
     i++; r++;
     ret.ext_base  = i;
@@ -435,10 +455,6 @@ package cheshire_pkg;
           cfg.RegExtRegionStart[k], cfg.RegExtRegionEnd[k]};
       r++;
       end
-    // Set APB mask for all reg-bus ports whose IP uses an APB4-flat interface
-    ret.apb_mask = '0;
-    ret.apb_mask[ret.regs] = 1'b1;
-    ret.apb_mask[ret.slink] = 1'b1;
     return ret;
   endfunction
 
@@ -465,7 +481,7 @@ package cheshire_pkg;
 
   // Choose static colocation of IDs based on how heavily used and/or critical they are
   function automatic cva6_id_map_t gen_cva6_id_map(cheshire_cfg_t cfg);
-    int unsigned DefaultMapEntry[2] = '{0, 0};
+    localparam int unsigned DefaultMapEntry[2] = '{0, 0};
     case (cfg.AxiMstIdWidth)
       // Provide exclusive ID to I-cache to prevent fetch blocking
       1: return '{'{Cva6IdBypMmu, 0}, '{Cva6IdBypLoad, 0}, '{Cva6IdBypAccel, 0}, '{Cva6IdBypStore, 0},
@@ -478,7 +494,7 @@ package cheshire_pkg;
                   '{Cva6IdBypAmo, 3}, '{Cva6IdICache,  4}, '{Cva6IdDCache,   5}};
       // With 4b of ID or more, no remapping is necessary; return redundant 0 -> 0 ID remaps.
       // This leaves ID mapping unaltered only if `MstIdBaseOffset` in `axi_id_serialize` is 0.
-      default: return '{Cva6IdsUsed {DefaultMapEntry}};
+      default: return '{default: DefaultMapEntry};
     endcase
   endfunction
 
@@ -494,24 +510,31 @@ package cheshire_pkg;
     ret.AxiDataWidth          = cfg.AxiDataWidth;
     ret.AxiIdWidth            = Cva6IdWidth;
     ret.AxiUserWidth          = cfg.AxiUserWidth;
-    ret.CvxifEn               = 0;
-    ret.DmBaseAddress         = EXTROM_BASE_ADDR;
-    ret.HaltAddress           = 'h800; // Relative to EXTROM_BASE_ADDR
-    ret.ExceptionAddress      = 'h810; // Relative to EXTROM_BASE_ADDR
+    ret.DmBaseAddress         = AmDbg;
+    ret.HaltAddress           = AmDbg + 'h800;
+    ret.ExceptionAddress      = AmDbg + 'h808;
     ret.NrNonIdempotentRules  = 2;   // Periphs, ExtNonCI;
-    ret.NonIdempotentAddrBase = {EXTROM_BASE_ADDR, NoCieBase};
+    ret.NonIdempotentAddrBase = {64'h0000_0000, NoCieBase};
     ret.NOCType               = config_pkg::NOC_TYPE_AXI4_ATOP;
-    ret.NonIdempotentLength   = {SPM_BASE_ADDR, 64'h6000_0000 - cfg.Cva6ExtCieLength};
-    ret.NrExecuteRegionRules  = 6;   // Debug, Bootrom, SPM, SPM Uncached, LLCOut, ExtCI;
-    ret.ExecuteRegionAddrBase = {EXTROM_BASE_ADDR, BOOTROM_BASE_ADDR, SPM_BASE_ADDR, SPM_UNC_BASE_ADDR, cfg.LlcOutRegionStart, CieBase};
-    ret.ExecuteRegionLength   = {EXTROM_SIZE,      BOOTROM_SIZE     , SizeSpm      , SizeSpm          , SizeLlcOut           , cfg.Cva6ExtCieLength};
+    // K5 3a: rule index 0 (DRAM/ExtNonCI) is zeroed out, not just narrowed,
+    // when Cva6NiDramRule=0. range_check(base, 0, addr) is always false
+    // (config_pkg.sv: (addr>=base) && (addr<base)), so the rule dies while
+    // NonIdempotentAddrBase[0] is untouched -- load_unit.sv's elaboration
+    // guard on NI_DRAM_BASE==0x4000_0000 still passes. Rule index 1
+    // (peripherals) is untouched by this field on purpose: NonIdemPotenceEn
+    // must stay 1, since it also gates wt_dcache_wbuffer.sv's ni_conflict
+    // store serialization for peripheral stores.
+    ret.NonIdempotentLength   = {64'h1000_0000,
+        cfg.Cva6NiDramRule ? (64'h6000_0000 - cfg.Cva6ExtCieLength) : 64'h0};
+    ret.NrExecuteRegionRules  = 5;   // Debug, Bootrom, AllSPM, LLCOut, ExtCI;
+    ret.ExecuteRegionAddrBase = {AmDbg, AmBrom, AmSpm, cfg.LlcOutRegionStart, CieBase};
+    ret.ExecuteRegionLength   = {64'h40000, 64'h40000, 2*SizeSpm, SizeLlcOut, cfg.Cva6ExtCieLength};
     ret.NrCachedRegionRules   = 3;   // CachedSPM, LLCOut, ExtCI;
-    ret.CachedRegionAddrBase  = {SPM_BASE_ADDR, cfg.LlcOutRegionStart,  CieBase};
-    ret.CachedRegionLength    = {SizeSpm,       SizeLlcOut,             cfg.Cva6ExtCieLength};
+    ret.CachedRegionAddrBase  = {AmSpm,   cfg.LlcOutRegionStart,  CieBase};
+    ret.CachedRegionLength    = {SizeSpm, SizeLlcOut,             cfg.Cva6ExtCieLength};
     ret.DebugEn               = 1;
-    ret.RVSCLIC               = cfg.Clic;
-    ret.RVXHCLIC              = cfg.ClicVsclic;
-    ret.CLICNumInterruptSrc   = NumCoreIrqs + NumIntIntrs + cfg.NumExtClicIntrs;
+//    ret.RVSCLIC               = cfg.Clic;
+//    ret.CLICNumInterruptSrc   = NumCoreIrqs + NumIntIntrs + cfg.NumExtClicIntrs;
     // TODO: Should some things be removed from the main config?
     // TODO: Should other things be added to the main config?
     // TODO: Tune missing parameters of interest (esp. cache and interconnect) properly
@@ -540,6 +563,7 @@ package cheshire_pkg;
     Cva6NrPMPEntries  : 0,
     Cva6ExtCieLength  : 'h2000_0000,  // [0x2.., 0x4..) is CIE, [0x4.., 0x8..) is non-CIE
     Cva6ExtCieOnTop   : 0,
+    Cva6NiDramRule    : 1,  // default ON; zcu102 overrides to 0, see cheshire_pkg.sv struct comment
     // Harts
     NumCores          : 1,
     CoreMaxTxns       : 8,
@@ -585,6 +609,7 @@ package cheshire_pkg;
     Clic              : 0,
     IrqRouter         : 0,
     BusErr            : 1,
+    Ara               : 0,
     // Debug
     DbgIdCode         : CheshireIdCode,
     DbgMaxReqs        : 4,
@@ -602,7 +627,7 @@ package cheshire_pkg;
     LlcAmoNumCuts     : 1,
     LlcAmoPostCut     : 1,
     LlcOutConnect     : 1,
-    LlcOutRegionStart : 'h8000_0000,
+    LlcOutRegionStart : 'h4000_0000,
     LlcOutRegionEnd   : 64'h1_0000_0000,
     // VGA: RGB565
     VgaRedWidth       : 5,
@@ -642,11 +667,9 @@ package cheshire_pkg;
     AxiRtWBufferDepth   : 16,
     AxiRtNumAddrRegions : 2,
     AxiRtCutPaths       : 1,
-    // CLIC
-    ClicVsclic        : 0,
-    ClicVsprio        : 0,
-    ClicNumVsctxts    : 4,
-    ClicPrioWidth     : 1,
+    // Ara
+    AraNrLanes          : 2,
+    AraVLEN             : 2048,
     // All non-set values should be zero
     default: '0
   };

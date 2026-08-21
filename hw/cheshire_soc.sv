@@ -112,11 +112,10 @@ module cheshire_soc import cheshire_pkg::*; #(
   `include "common_cells/registers.svh"
   `include "common_cells/assertions.svh"
   `include "cheshire/typedef.svh"
+  `include "ara/intf_typedef.svh"
 
   // Declare interface types internally
   `CHESHIRE_TYPEDEF_ALL(, Cfg)
-
-  import cheshire_addrmap_pkg::*;
 
   //////////////////
   //  Interrupts  //
@@ -242,10 +241,7 @@ module cheshire_soc import cheshire_pkg::*; #(
     UniqueIds:          0,
     AxiAddrWidth:       Cfg.AddrWidth,
     AxiDataWidth:       Cfg.AxiDataWidth,
-    NoAddrRules:        AxiOut.num_rules,
-    // Setting a `default` here allows for custom XBars with extended configs outside Cheshire.
-    // Importantly, this requires that '0 *disables* any and all such custom extensions.
-    default: '0
+    NoAddrRules:        AxiOut.num_rules
   };
 
   axi_xbar #(
@@ -432,29 +428,6 @@ module cheshire_soc import cheshire_pkg::*; #(
     .rsp_o  ( reg_out_rsp[RegOut.err] )
   );
 
-  // APB request/response arrays, indexed by reg-bus port index (same as reg_out_req/rsp)
-  apb_req_t  [RegOut.num_out-1:0] reg_apb_req;
-  apb_resp_t [RegOut.num_out-1:0] reg_apb_rsp;
-
-  // Generate reg_to_apb bridges for all ports flagged in apb_mask
-  for (genvar i = 0; i < RegOut.num_out; i++) begin : gen_reg_to_apb
-    if (RegOut.apb_mask[i]) begin : gen_converter
-      reg_to_apb #(
-        .reg_req_t ( reg_req_t  ),
-        .reg_rsp_t ( reg_rsp_t  ),
-        .apb_req_t ( apb_req_t  ),
-        .apb_rsp_t ( apb_resp_t )
-      ) i_reg_to_apb (
-        .clk_i,
-        .rst_ni,
-        .reg_req_i ( reg_out_req[i] ),
-        .reg_rsp_o ( reg_out_rsp[i] ),
-        .apb_req_o ( reg_apb_req[i] ),
-        .apb_rsp_i ( reg_apb_rsp[i] )
-      );
-    end
-  end
-
   // Connect external slaves
   if (Cfg.RegExtNumSlv > 0) begin : gen_ext_reg_slv
     assign reg_ext_slv_req_o = reg_out_req[RegOut.num_out-1:RegOut.ext_base];
@@ -529,10 +502,10 @@ module cheshire_soc import cheshire_pkg::*; #(
     // This is necessary for routing in the LLC-internal interconnect.
     always_comb begin
       axi_llc_remap_req = axi_llc_cut_req;
-      if ((axi_llc_cut_req.aw.addr & ~AmSpmRegionMask) == (SPM_UNC_BASE_ADDR & ~AmSpmRegionMask))
-        axi_llc_remap_req.aw.addr  = SPM_BASE_ADDR | (AmSpmRegionMask & axi_llc_cut_req.aw.addr);
-      if ((axi_llc_cut_req.ar.addr & ~AmSpmRegionMask) == (SPM_UNC_BASE_ADDR & ~AmSpmRegionMask))
-        axi_llc_remap_req.ar.addr = SPM_BASE_ADDR | (AmSpmRegionMask & axi_llc_cut_req.ar.addr);
+      if (axi_llc_cut_req.aw.addr & ~AmSpmRegionMask == AmSpmBaseUncached & ~AmSpmRegionMask)
+        axi_llc_remap_req.aw.addr  = AmSpm | (AmSpmRegionMask & axi_llc_cut_req.aw.addr);
+      if (axi_llc_cut_req.ar.addr & ~AmSpmRegionMask == AmSpmBaseUncached & ~AmSpmRegionMask)
+        axi_llc_remap_req.ar.addr = AmSpm | (AmSpmRegionMask & axi_llc_cut_req.ar.addr);
       axi_llc_cut_rsp = axi_llc_remap_rsp;
     end
 
@@ -563,7 +536,7 @@ module cheshire_soc import cheshire_pkg::*; #(
       .conf_resp_o         ( reg_out_rsp[RegOut.llc] ),
       .cached_start_addr_i ( addr_t'(Cfg.LlcOutRegionStart) ),
       .cached_end_addr_i   ( addr_t'(Cfg.LlcOutRegionEnd)   ),
-      .spm_start_addr_i    ( addr_t'(SPM_BASE_ADDR) ),
+      .spm_start_addr_i    ( addr_t'(AmSpm) ),
       .axi_llc_events_o    ( /* TODO: connect me to regs? */ )
     );
 
@@ -582,14 +555,15 @@ module cheshire_soc import cheshire_pkg::*; #(
   //  Cores  //
   /////////////
 
-  // TODO: Implement X interface support
-
   `CHESHIRE_TYPEDEF_AXI_CT(axi_cva6, addr_t, cva6_id_t, axi_data_t, axi_strb_t, axi_user_t)
 
-  localparam config_pkg::cva6_user_cfg_t Cva6Cfg = gen_cva6_cfg(Cfg);
+  localparam config_pkg::cva6_user_cfg_t Cva6UsrCfg = gen_cva6_cfg(Cfg);
+  localparam config_pkg::cva6_cfg_t Cva6Cfg = build_config_pkg::build_config(Cva6UsrCfg);
 
   // Boot from boot ROM only if available, otherwise from platform ROM
-  localparam logic [63:0] BootAddr = 64'(Cfg.Bootrom ? BOOTROM_BASE_ADDR : Cfg.PlatformRom);
+  //localparam logic [63:0] BootAddr = 64'(Cfg.Bootrom ? AmBrom : Cfg.PlatformRom); <------- initial it reads from zsl
+
+  localparam logic [63:0] BootAddr = 64'h4000_0000;
 
   // Debug interface for internal harts
   dm::hartinfo_t [NumIntHarts-1:0] dbg_int_info;
@@ -615,6 +589,39 @@ module cheshire_soc import cheshire_pkg::*; #(
 
   assign intr.intn.bus_err.cores = core_bus_err_intr_comb;
 
+  // TODO: Implement X interface support
+  // Define the exception type
+  `CVA6_TYPEDEF_EXCEPTION(exception_t, Cva6Cfg);
+  // Standard interface
+  `CVA6_INTF_TYPEDEF_ACC_REQ(accelerator_req_t, Cva6Cfg, fpnew_pkg::roundmode_e);
+  `CVA6_INTF_TYPEDEF_ACC_RESP(accelerator_resp_t, Cva6Cfg, exception_t);
+  // MMU interface
+  `CVA6_INTF_TYPEDEF_MMU_REQ(acc_mmu_req_t, Cva6Cfg);
+  `CVA6_INTF_TYPEDEF_MMU_RESP(acc_mmu_resp_t, Cva6Cfg, exception_t);
+  // Accelerator - CVA6's top-level interface
+  `CVA6_INTF_TYPEDEF_CVA6_TO_ACC(cva6_to_acc_t, accelerator_req_t, acc_mmu_resp_t);
+  `CVA6_INTF_TYPEDEF_ACC_TO_CVA6(acc_to_cva6_t, accelerator_resp_t, acc_mmu_req_t);
+
+  // Accelerator ports
+  cva6_to_acc_t acc_req;
+  acc_to_cva6_t acc_resp;
+
+  // CVA6-Ara memory consistency
+  logic                     acc_cons_en;
+  logic [Cfg.AddrWidth-1:0] inval_addr;
+  logic                     inval_valid;
+  logic                     inval_ready;
+
+  // Pack invalidation interface into acc interface
+  acc_to_cva6_t acc_resp_pack;
+  always_comb begin : pack_inval
+    acc_resp_pack                      = acc_resp;
+    acc_resp_pack.acc_resp.inval_valid = inval_valid;
+    acc_resp_pack.acc_resp.inval_addr  = inval_addr;
+    inval_ready                        = acc_req.acc_req.inval_ready;
+    acc_cons_en                        = acc_req.acc_req.acc_cons_en;
+  end
+
   for (genvar i = 0; i < NumIntHarts; i++) begin : gen_cva6_cores
     axi_cva6_req_t core_out_req, core_ur_req;
     axi_cva6_rsp_t core_out_rsp, core_ur_rsp;
@@ -626,18 +633,22 @@ module cheshire_soc import cheshire_pkg::*; #(
     logic [$clog2(NumClicIntrs)-1:0] clic_irq_id;
     logic [7:0]        clic_irq_level;
     riscv::priv_lvl_t  clic_irq_priv;
-    logic              clic_irq_v;
-    logic [5:0]        clic_irq_vsid;
 
     cva6 #(
-      .CVA6Cfg        ( build_config_pkg::build_config(Cva6Cfg) ),
-      .axi_ar_chan_t  ( axi_cva6_ar_chan_t ),
-      .axi_aw_chan_t  ( axi_cva6_aw_chan_t ),
-      .axi_w_chan_t   ( axi_cva6_w_chan_t  ),
-      .b_chan_t       ( axi_cva6_b_chan_t  ),
-      .r_chan_t       ( axi_cva6_r_chan_t  ),
-      .noc_req_t      ( axi_cva6_req_t ),
-      .noc_resp_t     ( axi_cva6_rsp_t )
+      .CVA6Cfg            ( Cva6Cfg ),
+      .axi_ar_chan_t      ( axi_cva6_ar_chan_t ),
+      .axi_aw_chan_t      ( axi_cva6_aw_chan_t ),
+      .axi_w_chan_t       ( axi_cva6_w_chan_t  ),
+      .b_chan_t           ( axi_cva6_b_chan_t  ),
+      .r_chan_t           ( axi_cva6_r_chan_t  ),
+      .cvxif_req_t        ( cva6_to_acc_t ),
+      .cvxif_resp_t       ( acc_to_cva6_t ),
+      .noc_req_t          ( axi_cva6_req_t ),
+      .noc_resp_t         ( axi_cva6_rsp_t ),
+      .accelerator_req_t  ( accelerator_req_t ),
+      .accelerator_resp_t ( accelerator_resp_t ),
+      .acc_mmu_req_t      ( acc_mmu_req_t ),
+      .acc_mmu_resp_t     ( acc_mmu_resp_t )
     ) i_core_cva6 (
       .clk_i,
       .rst_ni,
@@ -647,19 +658,17 @@ module cheshire_soc import cheshire_pkg::*; #(
       .ipi_i            ( msip[i] ),
       .time_irq_i       ( mtip[i] ),
       .debug_req_i      ( dbg_int_req[i] ),
-      .clic_irq_valid_i ( clic_irq_valid ),
-      .clic_irq_id_i    ( clic_irq_id    ),
-      .clic_irq_level_i ( clic_irq_level ),
-      .clic_irq_priv_i  ( clic_irq_priv  ),
-      .clic_irq_v_i     ( clic_irq_v     ),
-      .clic_irq_vsid_i  ( clic_irq_vsid  ),
-      .clic_irq_shv_i   ( clic_irq_shv   ),
-      .clic_irq_ready_o ( clic_irq_ready ),
-      .clic_kill_req_i  ( clic_irq_kill_req ),
-      .clic_kill_ack_o  ( clic_irq_kill_ack ),
+//      .clic_irq_valid_i ( clic_irq_valid ),
+//      .clic_irq_id_i    ( clic_irq_id    ),
+//      .clic_irq_level_i ( clic_irq_level ),
+//      .clic_irq_priv_i  ( clic_irq_priv  ),
+//      .clic_irq_shv_i   ( clic_irq_shv   ),
+//      .clic_irq_ready_o ( clic_irq_ready ),
+//      .clic_kill_req_i  ( clic_irq_kill_req ),
+//      .clic_kill_ack_o  ( clic_irq_kill_ack ),
       .rvfi_probes_o    ( ),
-      .cvxif_req_o      ( ),
-      .cvxif_resp_i     ( '0 ),
+      .cvxif_req_o      ( acc_req       ),
+      .cvxif_resp_i     ( acc_resp_pack ),
       .noc_req_o        ( core_out_req ),
       .noc_resp_i       ( core_out_rsp )
     );
@@ -707,16 +716,12 @@ module cheshire_soc import cheshire_pkg::*; #(
       };
 
       clic #(
-        .N_SOURCE    ( NumClicIntrs ),
-        .INTCTLBITS  ( Cfg.ClicIntCtlBits ),
-        .reg_req_t   ( reg_req_t ),
-        .reg_rsp_t   ( reg_rsp_t ),
-        .SSCLIC      ( 1 ),
-        .USCLIC      ( 0 ),
-        .VSCLIC      ( Cfg.ClicVsclic ),
-        .N_VSCTXTS   ( Cfg.ClicNumVsctxts ),
-        .VSPRIO      ( Cfg.ClicVsprio ),
-        .VSPRIO_W    ( Cfg.ClicPrioWidth )
+        .N_SOURCE   ( NumClicIntrs ),
+        .INTCTLBITS ( Cfg.ClicIntCtlBits ),
+        .reg_req_t  ( reg_req_t ),
+        .reg_rsp_t  ( reg_rsp_t ),
+        .SSCLIC     ( 1 ),
+        .USCLIC     ( 0 )
       ) i_clic (
         .clk_i,
         .rst_ni,
@@ -729,8 +734,6 @@ module cheshire_soc import cheshire_pkg::*; #(
         .irq_level_o    ( clic_irq_level ),
         .irq_shv_o      ( clic_irq_shv   ),
         .irq_priv_o     ( clic_irq_priv  ),
-        .irq_v_o        ( clic_irq_v     ),
-        .irq_vsid_o     ( clic_irq_vsid  ),
         .irq_kill_req_o ( clic_irq_kill_req ),
         .irq_kill_ack_i ( clic_irq_kill_ack )
       );
@@ -742,8 +745,6 @@ module cheshire_soc import cheshire_pkg::*; #(
       assign clic_irq_level    = '0;
       assign clic_irq_shv      = '0;
       assign clic_irq_priv     = riscv::priv_lvl_t'(0);
-      assign clic_irq_v        = '0;
-      assign clic_irq_vsid     = '0;
       assign clic_irq_kill_req = '0;
 
     end
@@ -787,6 +788,114 @@ module cheshire_soc import cheshire_pkg::*; #(
       .mst_req_o  ( axi_in_req[AxiIn.cores[i]] ),
       .mst_resp_i ( axi_in_rsp[AxiIn.cores[i]] )
     );
+
+    // Generate Ara RVV vector processor if enabled
+    if (Cfg.Ara) begin : gen_ara
+      // Configure Ara with the right AXI id width
+      typedef logic [Cfg.AxiMstIdWidth-1:0] ara_id_t;
+      // Default Ara AXI data width
+      localparam int unsigned AraDataWideWidth = 32 * Cfg.AraNrLanes;
+      typedef logic [AraDataWideWidth   -1 : 0] axi_ara_wide_data_t;
+      typedef logic [AraDataWideWidth/8 -1 : 0] axi_ara_wide_strb_t;
+      `AXI_TYPEDEF_ALL(
+        axi_ara_wide, addr_t, ara_id_t, axi_ara_wide_data_t, axi_ara_wide_strb_t, axi_user_t)
+      axi_ara_wide_req_t  axi_ara_wide_req_inval, axi_ara_wide_req;
+      axi_ara_wide_resp_t axi_ara_wide_resp_inval, axi_ara_wide_resp;
+
+      axi_mst_req_t axi_ara_narrow_req;
+      axi_mst_rsp_t axi_ara_narrow_resp;
+
+      ara #(
+        .NrLanes      ( Cfg.AraNrLanes         ),
+        .VLEN         ( Cfg.AraVLEN            ),
+        .OSSupport    ( 1'b1                   ),
+        .CVA6Cfg      ( Cva6Cfg                ),
+        .exception_t  ( exception_t            ),
+        .accelerator_req_t (accelerator_req_t ),
+        .accelerator_resp_t(accelerator_resp_t),
+        .acc_mmu_req_t     (acc_mmu_req_t     ),
+        .acc_mmu_resp_t    (acc_mmu_resp_t    ),
+        .cva6_to_acc_t     (cva6_to_acc_t     ),
+        .acc_to_cva6_t     (acc_to_cva6_t     ),
+        .AxiDataWidth ( AraDataWideWidth       ),
+        .AxiAddrWidth ( Cfg.AddrWidth          ),
+        .axi_ar_t     ( axi_ara_wide_ar_chan_t ),
+        .axi_r_t      ( axi_ara_wide_r_chan_t  ),
+        .axi_aw_t     ( axi_ara_wide_aw_chan_t ),
+        .axi_w_t      ( axi_ara_wide_w_chan_t  ),
+        .axi_b_t      ( axi_ara_wide_b_chan_t  ),
+        .axi_req_t    ( axi_ara_wide_req_t     ),
+        .axi_resp_t   ( axi_ara_wide_resp_t    )
+      ) i_ara (
+        .clk_i           ( clk_i             ),
+        .rst_ni          ( rst_ni            ),
+        .scan_enable_i   ( 1'b0              ),
+        .scan_data_i     ( 1'b0              ),
+        .scan_data_o     ( /* Unused */      ),
+        .acc_req_i       ( acc_req           ),
+        .acc_resp_o      ( acc_resp          ),
+        .axi_req_o       ( axi_ara_wide_req  ),
+        .axi_resp_i      ( axi_ara_wide_resp )
+      );
+
+      // Issue invalidations to CVA6 L1D$
+      axi_inval_filter #(
+        .MaxTxns    ( 4                               ),
+        .AddrWidth  ( Cfg.AddrWidth                   ),
+        .L1LineWidth( Cva6Cfg.DCACHE_LINE_WIDTH/8     ),
+        .aw_chan_t  ( axi_ara_wide_aw_chan_t          ),
+        .req_t      ( axi_ara_wide_req_t              ),
+        .resp_t     ( axi_ara_wide_resp_t             )
+      ) i_ara_axi_inval_filter (
+        .clk_i        ( clk_i                   ),
+        .rst_ni       ( rst_ni                  ),
+        .en_i         ( acc_cons_en             ),
+        .slv_req_i    ( axi_ara_wide_req        ),
+        .slv_resp_o   ( axi_ara_wide_resp       ),
+        .mst_req_o    ( axi_ara_wide_req_inval  ),
+        .mst_resp_i   ( axi_ara_wide_resp_inval ),
+        .inval_addr_o ( inval_addr              ),
+        .inval_valid_o( inval_valid             ),
+        .inval_ready_i( inval_ready             )
+      );
+
+      // Convert from AraDataWideWidth (axi_ara_wide) to Cfg.AxiDataWidth (axi_ara_narrow)
+      axi_dw_converter #(
+        .AxiSlvPortDataWidth ( AraDataWideWidth       ),
+        .AxiMstPortDataWidth ( Cfg.AxiDataWidth       ),
+        .AxiMaxReads         ( 4                      ), // TODO: Tune this w.r.t. ARA_NR_LANES
+        .AxiAddrWidth        ( Cfg.AddrWidth          ),
+        .AxiIdWidth          ( Cfg.AxiMstIdWidth      ),
+        .aw_chan_t           ( axi_ara_wide_aw_chan_t ),
+        .mst_w_chan_t        ( axi_mst_w_chan_t       ),
+        .slv_w_chan_t        ( axi_ara_wide_w_chan_t  ),
+        .b_chan_t            ( axi_ara_wide_b_chan_t  ),
+        .ar_chan_t           ( axi_ara_wide_ar_chan_t ),
+        .mst_r_chan_t        ( axi_mst_r_chan_t       ),
+        .slv_r_chan_t        ( axi_ara_wide_r_chan_t  ),
+        .axi_mst_req_t       ( axi_mst_req_t          ),
+        .axi_mst_resp_t      ( axi_mst_rsp_t          ),
+        .axi_slv_req_t       ( axi_ara_wide_req_t     ),
+        .axi_slv_resp_t      ( axi_ara_wide_resp_t    )
+      ) i_ara_axi_dw_converter (
+        .clk_i      ( clk_i                   ),
+        .rst_ni     ( rst_ni                  ),
+        .slv_req_i  ( axi_ara_wide_req_inval  ),
+        .slv_resp_o ( axi_ara_wide_resp_inval ),
+        .mst_req_o  ( axi_ara_narrow_req      ),
+        .mst_resp_i ( axi_ara_narrow_resp     )
+      );
+
+      // Assign to crossbar input/master
+      assign axi_in_req[AxiIn.ara] = axi_ara_narrow_req;
+      assign axi_ara_narrow_resp   = axi_in_rsp[AxiIn.ara];
+
+    end else begin : gen_no_ara
+      // Tie-to-safe the Ara-related signals
+      assign acc_resp              = '0;
+      assign inval_valid           = '0;
+      assign inval_addr            = '0;
+    end
   end
 
   /////////////////////////
@@ -927,7 +1036,7 @@ module cheshire_soc import cheshire_pkg::*; #(
   dm_top #(
     .NrHarts        ( NumDbgHarts ),
     .BusWidth       ( Cfg.AxiDataWidth ),
-    .DmBaseAddress  ( EXTROM_BASE_ADDR )
+    .DmBaseAddress  ( AmDbg )
   ) i_dbg_dm_top (
     .clk_i,
     .rst_ni,
@@ -1024,71 +1133,47 @@ module cheshire_soc import cheshire_pkg::*; #(
   //  Register File  //
   /////////////////////
 
-  cheshire_soc_regs_pkg::soc_regs__in_t  reg_hw2reg;
-  cheshire_soc_regs_pkg::soc_regs__out_t reg_reg2hw;
-
-  // Shorthand for external (read-only) register hw-interface assignments
-  `define CHS_HWREG(name, data) name: '{ \
-    rd_ack: reg_reg2hw.name.req & ~reg_reg2hw.name.req_is_wr, \
-    rd_data: data \
-  }
+  cheshire_reg_pkg::cheshire_hw2reg_t reg_hw2reg;
 
   assign reg_hw2reg = '{
-    `CHS_HWREG(boot_mode,     '{ boot_mode:    boot_mode_i,       default: '0 }),
-    `CHS_HWREG(rtc_freq,      '{ ref_freq:     Cfg.RtcFreq,       default: '0 }),
-    `CHS_HWREG(platform_rom,  '{ platform_rom: Cfg.PlatformRom,   default: '0 }),
-    `CHS_HWREG(num_int_harts, '{ num_harts:    NumIntHarts,       default: '0 }),
-    `CHS_HWREG(llc_size,      '{ llc_size:     get_llc_size(Cfg), default: '0 }),
-    `CHS_HWREG(hw_features,   '{
-        bootrom:     Cfg.Bootrom,
-        llc:         Cfg.LlcNotBypass,
-        uart:        Cfg.Uart,
-        i2c:         Cfg.I2c,
-        gpio:        Cfg.Gpio,
-        spi_host:    Cfg.SpiHost,
-        dma:         Cfg.Dma,
-        serial_link: Cfg.SerialLink,
-        vga:         Cfg.Vga,
-        usb:         Cfg.Usb,
-        axirt:       Cfg.AxiRt,
-        clic:        Cfg.Clic,
-        irq_router:  Cfg.IrqRouter,
-        bus_err:     Cfg.BusErr,
-        default: '0
-    }),
-    `CHS_HWREG(vga_params,    '{
-      red_width:    Cfg.VgaRedWidth,
-      green_width:  Cfg.VgaGreenWidth,
-      blue_width:   Cfg.VgaBlueWidth,
-      default: '0
-    })
+    boot_mode     : boot_mode_i,
+    rtc_freq      : Cfg.RtcFreq,
+    platform_rom  : Cfg.PlatformRom,
+    num_int_harts : NumIntHarts,
+    hw_features   : '{
+      bootrom     : Cfg.Bootrom,
+      llc         : Cfg.LlcNotBypass,
+      uart        : Cfg.Uart,
+      i2c         : Cfg.I2c,
+      gpio        : Cfg.Gpio,
+      spi_host    : Cfg.SpiHost,
+      dma         : Cfg.Dma,
+      serial_link : Cfg.SerialLink,
+      vga         : Cfg.Vga,
+      usb         : Cfg.Usb,
+      axirt       : Cfg.AxiRt,
+      clic        : Cfg.Clic,
+      irq_router  : Cfg.IrqRouter,
+      bus_err     : Cfg.BusErr
+    },
+    llc_size      : get_llc_size(Cfg),
+    vga_params    : '{
+      red_width   : Cfg.VgaRedWidth,
+      green_width : Cfg.VgaGreenWidth,
+      blue_width  : Cfg.VgaBlueWidth
+    }
   };
 
-  `undef CHS_HWREG
-
-
-  // Work around a SystemVerilog limitation, which does not allow
-  // individual member access into structs which are part of an array of structs
-  // See IEEE Std 1800-2023 6.5 Nets and Variables
-
-  apb_resp_t regs_apb_rsp;
-  assign reg_apb_rsp[RegOut.regs] = regs_apb_rsp;
-
-  cheshire_soc_regs i_regs (
-    .clk    ( clk_i  ),
-    .arst_n ( rst_ni ),
-    .s_apb_psel    ( reg_apb_req[RegOut.regs].psel    ),
-    .s_apb_penable ( reg_apb_req[RegOut.regs].penable ),
-    .s_apb_pwrite  ( reg_apb_req[RegOut.regs].pwrite  ),
-    .s_apb_pprot   ( reg_apb_req[RegOut.regs].pprot   ),
-    .s_apb_paddr   ( reg_aw_bt'(reg_apb_req[RegOut.regs].paddr) ),
-    .s_apb_pwdata  ( reg_apb_req[RegOut.regs].pwdata  ),
-    .s_apb_pstrb   ( reg_apb_req[RegOut.regs].pstrb   ),
-    .s_apb_pready  ( regs_apb_rsp.pready              ),
-    .s_apb_prdata  ( regs_apb_rsp.prdata              ),
-    .s_apb_pslverr ( regs_apb_rsp.pslverr             ),
-    .hwif_in       ( reg_hw2reg ),
-    .hwif_out      ( reg_reg2hw )
+  cheshire_reg_top #(
+    .reg_req_t  ( reg_req_t ),
+    .reg_rsp_t  ( reg_rsp_t )
+  ) i_regs (
+    .clk_i,
+    .rst_ni,
+    .reg_req_i  ( reg_out_req[RegOut.regs] ),
+    .reg_rsp_o  ( reg_out_rsp[RegOut.regs] ),
+    .hw2reg     ( reg_hw2reg ),
+    .devmode_i  ( 1'b1 )
   );
 
   ////////////////////////
@@ -1486,22 +1571,22 @@ module cheshire_soc import cheshire_pkg::*; #(
       axi_in_req[AxiIn.dma].ar.user = Cfg.AxiUserDefault;
     end
 
-    cheshire_idma_wrap #(
-      .AxiAddrWidth     ( Cfg.AddrWidth     ),
-      .AxiDataWidth     ( Cfg.AxiDataWidth  ),
-      .AxiIdWidth       ( Cfg.AxiMstIdWidth ),
-      .AxiUserWidth     ( Cfg.AxiUserWidth  ),
-      .AxiSlvIdWidth    ( AxiSlvIdWidth     ),
-      .NumAxInFlight    ( Cfg.DmaNumAxInFlight    ),
-      .MemSysDepth      ( Cfg.DmaMemSysDepth      ),
-      .JobFifoDepth     ( Cfg.DmaJobFifoDepth     ),
-      .RAWCouplingAvail ( Cfg.DmaRAWCouplingAvail ),
-      .IsTwoD           ( Cfg.DmaConfEnableTwoD   ),
-      .axi_mst_req_t    ( axi_mst_req_t ),
-      .axi_mst_rsp_t    ( axi_mst_rsp_t ),
-      .axi_slv_req_t    ( axi_slv_req_t ),
-      .axi_slv_rsp_t    ( axi_slv_rsp_t )
-    ) i_idma (
+    dma_core_wrap #(
+      .AxiAddrWidth       ( Cfg.AddrWidth           ),
+      .AxiDataWidth       ( Cfg.AxiDataWidth        ),
+      .AxiIdWidth         ( Cfg.AxiMstIdWidth       ),
+      .AxiUserWidth       ( Cfg.AxiUserWidth        ),
+      .AxiSlvIdWidth      ( AxiSlvIdWidth           ),
+      .NumAxInFlight      ( Cfg.DmaNumAxInFlight    ),
+      .MemSysDepth        ( Cfg.DmaMemSysDepth      ),
+      .JobFifoDepth       ( Cfg.DmaJobFifoDepth     ),
+      .RAWCouplingAvail   ( Cfg.DmaRAWCouplingAvail ),
+      .IsTwoD             ( Cfg.DmaConfEnableTwoD   ),
+      .axi_mst_req_t      ( axi_mst_req_t           ),
+      .axi_mst_rsp_t      ( axi_mst_rsp_t           ),
+      .axi_slv_req_t      ( axi_slv_req_t           ),
+      .axi_slv_rsp_t      ( axi_slv_rsp_t           )
+    ) i_dma (
       .clk_i,
       .rst_ni,
       .testmode_i     ( test_mode_i ),
@@ -1594,17 +1679,21 @@ module cheshire_soc import cheshire_pkg::*; #(
       .mst_resp_i ( slink_tx_idr_rsp )
     );
 
-    slink #(
+    serial_link #(
       .axi_req_t    ( axi_mst_req_t ),
       .axi_rsp_t    ( axi_mst_rsp_t ),
+      .cfg_req_t    ( reg_req_t ),
+      .cfg_rsp_t    ( reg_rsp_t ),
       .aw_chan_t    ( axi_mst_aw_chan_t ),
       .ar_chan_t    ( axi_mst_ar_chan_t ),
       .r_chan_t     ( axi_mst_r_chan_t  ),
       .w_chan_t     ( axi_mst_w_chan_t  ),
       .b_chan_t     ( axi_mst_b_chan_t  ),
-      .apb_req_t    ( apb_req_t  ),
-      .apb_rsp_t    ( apb_resp_t ),
-      .NoRegCdc     ( 1'b1 ) // Since reg_clk_i is assigned to clk_i
+      .hw2reg_t     ( serial_link_single_channel_reg_pkg::serial_link_single_channel_hw2reg_t ),
+      .reg2hw_t     ( serial_link_single_channel_reg_pkg::serial_link_single_channel_reg2hw_t ),
+      .NumChannels  ( SlinkNumChan   ),
+      .NumLanes     ( SlinkNumLanes  ),
+      .MaxClkDiv    ( SlinkMaxClkDiv )
     ) i_serial_link (
       .clk_i,
       .rst_ni,
@@ -1617,8 +1706,8 @@ module cheshire_soc import cheshire_pkg::*; #(
       .axi_in_rsp_o   ( slink_tx_idr_rsp ),
       .axi_out_req_o  ( axi_in_req[AxiIn.slink]   ),
       .axi_out_rsp_i  ( axi_in_rsp[AxiIn.slink]   ),
-      .apb_req_i      ( reg_apb_req[RegOut.slink] ),
-      .apb_rsp_o      ( reg_apb_rsp[RegOut.slink] ),
+      .cfg_req_i      ( reg_out_req[RegOut.slink] ),
+      .cfg_rsp_o      ( reg_out_rsp[RegOut.slink] ),
       .ddr_rcv_clk_i  ( slink_rcv_clk_i ),
       .ddr_rcv_clk_o  ( slink_rcv_clk_o ),
       .ddr_i          ( slink_i ),
@@ -1788,5 +1877,8 @@ module cheshire_soc import cheshire_pkg::*; #(
   // TODO: check that `ext` (IO) and internal types agree
   // TODO: many other things I most likely forgot
   // TODO: check that LLC only exists if its output is connected (the reverse is allowed)
+
+  if (Cfg.Ara && (NumIntHarts > 1))
+    $error("Ara is only compatible with a single-core architecture.");
 
 endmodule

@@ -7,26 +7,13 @@
 // Cyril Koenig <cykoenig@iis.ee.ethz.ch>
 // Yann Picod <ypicod@ethz.ch>
 // Paul Scheffler <paulsc@iis.ee.ethz.ch>
-// Yvan Tortorella <yvan.tortorella@gmail.com>
 
 `include "cheshire/typedef.svh"
 `include "phy_definitions.svh"
 
 // TODO: Expose more IO: unused SPI CS, Serial Link, etc.
 
-module cheshire_top_xilinx import cheshire_pkg::*; #(
-`ifdef TARGET_VCU128
-  localparam int unsigned Ddr4CsNWidth = 2,
-  localparam int unsigned Ddr4DmDbiNWidth = 9,
-  localparam int unsigned Ddr4DqWidth = 72,
-  localparam int unsigned Ddr4DqsWidth = 9
-`else // Default to VCU118
-  localparam int unsigned Ddr4CsNWidth = 1,
-  localparam int unsigned Ddr4DmDbiNWidth = 8,
-  localparam int unsigned Ddr4DqWidth = 64,
-  localparam int unsigned Ddr4DqsWidth = 8
-`endif
-)(
+module cheshire_top_xilinx import cheshire_pkg::*; (
   input  logic  sys_clk_p,
   input  logic  sys_clk_n,
 
@@ -40,10 +27,6 @@ module cheshire_top_xilinx import cheshire_pkg::*; #(
 `ifdef USE_SWITCHES
   input logic       test_mode_i,
   input logic [1:0] boot_mode_i,
-`endif
-
-`ifdef USE_NUM_LED
-  output logic [`USE_NUM_LED-1:0] led_o,
 `endif
 
 `ifdef USE_JTAG
@@ -87,30 +70,32 @@ module cheshire_top_xilinx import cheshire_pkg::*; #(
   output logic [4:0]  vga_blue_o,
 `endif
 
-`ifdef USE_QSPI
-`ifndef USE_STARTUPE3
-`ifndef USE_STARTUPE2
-  // If a STARTUPE2 is present, this is wired there.
-  output wire        spih_sck_o,
-`endif
-  output wire        spih_csb_o,
-  inout  wire  [3:0] spih_sd_io,
-`endif
-`endif
-
 `ifdef USE_DDR4
-  `DDR4_INTF(Ddr4CsNWidth, Ddr4DmDbiNWidth, Ddr4DqWidth, Ddr4DqsWidth)
+  `DDR4_INTF
 `endif
 `ifdef USE_DDR3
   `DDR3_INTF
 `endif
 
-  output logic  uart_tx_o,
-  input  logic  uart_rx_i,
+  `ifndef USE_ZYNQMP
+    output logic  uart_tx_o,
+    input  logic  uart_rx_i,
+  `endif
+
+  `ifdef USE_ZYNQMP
+    // Η διεπαφή AXI (Μπαλαντέζα) προς το Zynq PS
+    //`ZYNQMP_HP0_MST_INTF ---> INTERNAL SIGNALS
+    //`ZYNQMP_HP0_WIRE_DECL
+    // Τα φυσικά pins του ARM (MIOs) και της DDR4 μνήμης του
+  `endif
 
   inout  wire [UsbNumPorts-1:0] usb_dm_io,
   inout  wire [UsbNumPorts-1:0] usb_dp_io
 );
+
+`ifdef USE_ZYNQMP  
+	`ZYNQMP_HP0_WIRE_DECL
+`endif
 
   ///////////////////////
   //  Cheshire Config  //
@@ -121,29 +106,52 @@ module cheshire_top_xilinx import cheshire_pkg::*; #(
     cheshire_cfg_t ret  = DefaultCfg;
     ret.RtcFreq         = 1000000;
     ret.SerialLink      = 0;
+    // Cut peripherals unused in the ZCU102 host-target setup to save LUTs.
+    // Their cheshire_soc output ports are internally tied off when disabled,
+    // and none have board pins on ZCU102, so this is safe. (~9.4k LUTs)
+    ret.Vga             = 0;
+    ret.SpiHost         = 0;
+    ret.I2c             = 0;
+    ret.BusErr          = 0;
+    ret.Gpio            = 0;
+    // iDMA unused: apps (fc_layer/conv_layer/fmatmul) use RVV load/store +
+    // software memcpy, not the HW DMA; boot ROM (the other DMA user) is bypassed.
+    ret.Dma             = 0;
+    // --- LLC RE-ENABLED (bring-up: Ara 8x8+ deadlock fix) ---
+    // Bypassing the LLC exposed Ara's shallow, L2-SRAM-latency-sized store buffer
+    // directly to the PS-DDR/HP0 path, whose axi_iw_converter caps out at
+    // MaxUniqIds=8 / MaxTxns=24 (dram_wrapper_xilinx.sv). A streaming store burst
+    // (e.g. 8x8 = 512 stores) overruns that ceiling -> hard deadlock.
+    // With the LLC ON, hits are absorbed in 128 KiB of on-chip SRAM (no DDR txn),
+    // and writebacks to DDR are throttled to LlcMaxWriteTxns=16 (< 24) -> no wedge.
+    // Trade-off: CVA6 stores now sit in the LLC (write-back) until flushed, so the
+    // ARM must FLUSH the LLC before reading results/console via devmem
+    // (write the LLC flush cfg reg at AmLlc; see notes / run script).
+    // ret.LlcNotBypass = 0;   // old: bypass -> live DDR but Ara deadlock on bursts
+    ret.LlcNotBypass    = 1;
   `ifdef USE_USB
     ret.Usb = 1;
   `else
     ret.Usb = 0;
   `endif
-  `ifdef USE_CFG_REGS
-    ret.RegExtNumSlv   = 1;
-    ret.RegExtNumRules = 1;
-    // Mirror the address map of the internal configuration registers.
-    // * 256K @ AXI: 0x4000_0000
-    // * 4K   @ AXI: 0x4100_0000
-    // * 256K @ Reg: 0x4200_0000
-    // * 4K   @ Reg: 0x4300_0000
-    ret.RegExtRegionIdx   [0] = 0;
-    ret.RegExtRegionStart [0] = 32'h4300_0000;
-    ret.RegExtRegionEnd   [0] = 32'h4300_1000;
+  `ifdef ARA
+    ret.Ara = 1;
+    ret.AraVLEN = `ifdef VLEN `VLEN `else 0 `endif;
+    ret.AraNrLanes = `ifdef NR_LANES `NR_LANES `else 0 `endif;
   `endif
-  `ifdef USE_VCLIC
-    ret.Clic = 1;
-    ret.ClicVsclic = 1;
-    ret.ClicVsprio = 1;
-    ret.ClicNumVsctxts = 4;
-    ret.ClicPrioWidth = 1;
+  `ifdef TARGET_ZCU102
+    // K5 3a: this function is shared by every Xilinx target (zcu102, vcu128,
+    // genesys2 all compile this same cheshire_top_xilinx.sv), so the field
+    // default (cheshire_pkg.sv: DefaultCfg.Cva6NiDramRule=1) is left alone
+    // above and only overridden here, under the same `ifdef TARGET_ZCU102
+    // idiom already used elsewhere in this tree (phy_definitions.svh,
+    // dram_wrapper_xilinx.sv). An earlier, unguarded version of this
+    // override would have silently changed vcu128/genesys2 behavior too.
+    // Safe only because .text is loaded into DRAM ([0x4000_0000,0x8000_0000))
+    // on zcu102 specifically and no zcu102 peripheral lives in that range;
+    // an instance that attaches real non-idempotent I/O there must not set
+    // this.
+    ret.Cva6NiDramRule = 0;
   `endif
     return ret;
   endfunction
@@ -159,6 +167,7 @@ module cheshire_top_xilinx import cheshire_pkg::*; #(
   wire sys_clk;
   wire soc_clk;
   wire usb_clk;
+  wire mmcm_locked;   // ILA-DEBUG: clkwiz lock status (was previously left unconnected)
 
   IBUFDS #(
     .IBUF_LOW_PWR ("FALSE")
@@ -170,8 +179,8 @@ module cheshire_top_xilinx import cheshire_pkg::*; #(
 
   clkwiz i_clkwiz (
     .clk_in1  ( sys_clk ),
-    .reset    ( '0 ),
-    .locked   ( ),
+  //.locked   ( ),                 // ILA-DEBUG: was unconnected
+    .locked   ( mmcm_locked ),     // ILA-DEBUG: expose lock status
     .clk_50   ( soc_clk ),
     .clk_48   ( usb_clk ),
     .clk_20   ( ),
@@ -183,12 +192,19 @@ module cheshire_top_xilinx import cheshire_pkg::*; #(
   /////////////////////
 
   // Select SoC reset
+// Select SoC reset
 `ifdef USE_RESET
   logic sys_resetn;
   assign sys_resetn = ~sys_reset;
 `elsif USE_RESETN
   logic sys_reset;
   assign sys_reset  = ~sys_resetn;
+`elsif USE_ZYNQMP
+  // Το Reset προέρχεται από το GPIO του PS (ARM) — δεν είναι κουμπί της πλακέτας.
+  logic sys_reset, sys_resetn;
+  logic ps_gpio_o;
+  assign sys_reset  = ps_gpio_o;
+  assign sys_resetn = ~sys_reset;
 `endif
 
   // Tie off inputs of no switches
@@ -207,6 +223,11 @@ module cheshire_top_xilinx import cheshire_pkg::*; #(
   logic [1:0] boot_mode, vio_boot_mode;
   logic       sys_rst;
 
+  // K5 3b: the K1/K3/K4 ni_disable_i diagnostic switch (VIO probe_out3,
+  // USE_NI_VIO macro) is removed -- the icache/load_unit/wbuffer deadlock it
+  // was used to gate around is now fixed at the config source (see
+  // gen_cheshire_xilinx_cfg() above, Cva6NiDramRule). impl_ip.tcl reverted
+  // to C_NUM_PROBE_OUT=3 (matching genesys2/vcu128) alongside this.
 `ifdef USE_VIO
   vio i_vio (
     .clk        ( soc_clk ),
@@ -220,11 +241,7 @@ module cheshire_top_xilinx import cheshire_pkg::*; #(
   assign vio_boot_mode_sel  = '0;
 `endif
 
-`ifdef USE_RESET
-  assign sys_rst = sys_reset | vio_reset;
-`elsif USE_RESETN
   assign sys_rst = ~sys_resetn | vio_reset;
-`endif
   assign boot_mode = vio_boot_mode_sel ? vio_boot_mode : boot_mode_i;
 
   //////////////////
@@ -240,6 +257,7 @@ module cheshire_top_xilinx import cheshire_pkg::*; #(
     .rst_no       ( rst_n       ),
     .init_no      ( )
   );
+
 
   ////////////
   //  JTAG  //
@@ -299,12 +317,6 @@ module cheshire_top_xilinx import cheshire_pkg::*; #(
   logic [1:0] spi_cs_soc;
   logic [3:0] spi_sd_soc_out;
   logic [3:0] spi_sd_soc_in;
-  // Multiplex between SPI SD mode and QSPI proper
-  logic [3:0] spi_sd_sd_in, spi_sd_spih_in;
-
-  // Choose SoC input based on chip select
-  assign spi_sd_soc_in =
-    ({4{~spi_cs_soc[0]}} & spi_sd_sd_in) | ({4{~spi_cs_soc[1]}} & spi_sd_spih_in);
 
   logic spi_sck_en;
   logic [1:0] spi_cs_en;
@@ -320,13 +332,13 @@ module cheshire_top_xilinx import cheshire_pkg::*; #(
   // MOSI - SD CMD signal
   assign sd_cmd_o         = spi_sd_en[0]  ? spi_sd_soc_out[0] : 1'b1;
   // MISO - SD DAT0 signal
-  assign spi_sd_sd_in[1]  = sd_d_io[0];
+  assign spi_sd_soc_in[1] = sd_d_io[0];
   // SD DAT1 and DAT2 signal tie-off - Not used for SPI mode
   assign sd_d_io[2:1]     = 2'b11;
   // Bind input side of SoC low for output signals
-  assign spi_sd_sd_in[0]  = 1'b0;
-  assign spi_sd_sd_in[2]  = 1'b0;
-  assign spi_sd_sd_in[3]  = 1'b0;
+  assign spi_sd_soc_in[0] = 1'b0;
+  assign spi_sd_soc_in[2] = 1'b0;
+  assign spi_sd_soc_in[3] = 1'b0;
 `endif
 
   ////////////
@@ -345,14 +357,14 @@ module cheshire_top_xilinx import cheshire_pkg::*; #(
   assign qspi_clk      = spi_sck_soc;
   assign qspi_cs_b     = spi_cs_soc;
   assign qspi_dqo      = spi_sd_soc_out;
-  assign spi_sd_spih_in = qspi_dqi;
+  assign spi_sd_soc_in = qspi_dqi;
 
   // Tristate enables
   assign qspi_clk_ts  = ~spi_sck_en;
   assign qspi_cs_b_ts = ~spi_cs_en;
   assign qspi_dqo_ts  = ~spi_sd_en;
 
-  // On VCU128/VCU118/ZCU102, SPI ports are not directly available
+  // On VCU128/ZCU102, SPI ports are not directly available
 `ifdef USE_STARTUPE3
   STARTUPE3 #(
     .PROG_USR("FALSE"),
@@ -377,65 +389,7 @@ module cheshire_top_xilinx import cheshire_pkg::*; #(
     .USRDONETS  ( 1'b1 )
   );
 `else
-`ifdef USE_STARTUPE2
-  (*keep="TRUE"*)
-  STARTUPE2 #(
-    .PROG_USR("FALSE"),
-    .SIM_CCLK_FREQ(0.0)
-    ) i_startupe2 (
-    .CFGCLK     ( ),
-    .CFGMCLK    ( ),
-    .EOS        ( ),
-    .PREQ       ( ),
-    .CLK        ( 1'b0 ),
-    .GSR        ( 1'b0 ),
-    .GTS        ( 1'b0 ),
-    .KEYCLEARB  ( 1'b0 ),
-    .PACK       ( 1'b0 ),
-    .USRCCLKO   ( spi_sck_soc ),
-    .USRCCLKTS  ( 1'b0 ),
-    .USRDONEO   ( 1'b0 ),
-    .USRDONETS  ( 1'b0 )
-  );
-`else
-  IOBUF #(
-    .DRIVE        ( 12        ),
-    .IBUF_LOW_PWR ( "FALSE"   ),
-    .IOSTANDARD   ( "DEFAULT" ),
-    .SLEW         ( "FAST"    )
-  ) i_spih_sck_iobuf (
-    .O  (  ),
-    .IO ( spih_sck_o  ),
-    .I  ( spi_sck_soc ),
-    .T  ( ~spi_sck_en )
-  );
-`endif
-
-  IOBUF #(
-    .DRIVE        ( 12        ),
-    .IBUF_LOW_PWR ( "FALSE"   ),
-    .IOSTANDARD   ( "DEFAULT" ),
-    .SLEW         ( "FAST"    )
-  ) i_spih_csb_iobuf (
-    .O  (  ),
-    .IO ( spih_csb_o ),
-    .I  ( spi_cs_soc [1] ),
-    .T  ( ~spi_cs_en [1] )
-  );
-
-  for (genvar i = 0; i < 4; ++i) begin : gen_qspi_iobufs
-    IOBUF #(
-      .DRIVE        ( 12        ),
-      .IBUF_LOW_PWR ( "FALSE"   ),
-      .IOSTANDARD   ( "DEFAULT" ),
-      .SLEW         ( "FAST"    )
-    ) i_spih_sd_iobuf (
-      .O  ( spi_sd_spih_in [i] ),
-      .IO ( spih_sd_io     [i] ),
-      .I  ( spi_sd_soc_out [i] ),
-      .T  ( ~spi_sd_en     [i] )
-    );
-  end
+  // TODO: off-chip QSPI interface
 `endif
 `endif
 
@@ -486,59 +440,16 @@ module cheshire_top_xilinx import cheshire_pkg::*; #(
     end
   end
 
-  ///////////////////
-  // Cfg Registers //
-  ///////////////////
-
-  chs_xilinx_reg_pkg::chs_xilinx_reg2hw_t reg2hw;
-  chs_xilinx_reg_pkg::chs_xilinx_hw2reg_t hw2reg;
-
-  reg_req_t cfg_reg_req;
-  reg_rsp_t cfg_reg_rsp;
-
-`ifdef USE_CFG_REGS
-  chs_xilinx_reg_top #(
-    .reg_req_t ( reg_req_t ),
-    .reg_rsp_t ( reg_rsp_t )
-  ) i_chs_xilinx_reg_top (
-    .clk_i     ( soc_clk ),
-    .rst_ni    ( rst_n   ),
-    .reg_req_i ( cfg_reg_req ),
-    .reg_rsp_o ( cfg_reg_rsp ),
-    .reg2hw    ( reg2hw ),
-    .hw2reg    ( hw2reg ),
-    .devmode_i ( 1'b1   )
-  );
-`endif
-
-  //////////
-  // LEDs //
-  //////////
-
-`ifdef USE_NUM_LED
-  assign led_o = reg2hw.leds;
-`endif
-
   /////////////////
   // Fan Control //
   /////////////////
 
 `ifdef USE_FAN
-  logic [3:0] fan_setting;
-
-`ifdef USE_CFG_REGS
-  assign fan_setting       = reg2hw.fan_ctl;
-  assign hw2reg.fan_ctl.d  = fan_sw;
-  assign hw2reg.fan_ctl.de = ~reg2hw.fan_sw_override;
-`else
-  assign fan_setting = fan_sw;
-`endif
-
   fan_ctrl i_fan_ctrl (
-    .clk_i          ( soc_clk     ),
-    .rst_ni         ( rst_n       ),
-    .pwm_setting_i  ( fan_setting ),
-    .fan_pwm_o      ( fan_pwm     )
+    .clk_i          ( soc_clk ),
+    .rst_ni         ( rst_n   ),
+    .pwm_setting_i  ( fan_sw  ),
+    .fan_pwm_o      ( fan_pwm )
   );
 `endif
 
@@ -546,8 +457,8 @@ module cheshire_top_xilinx import cheshire_pkg::*; #(
   // DRAM MIG //
   //////////////
 
-  axi_llc_req_t axi_llc_mst_req, axi_dram_mst_req;
-  axi_llc_rsp_t axi_llc_mst_rsp, axi_dram_mst_rsp;
+  axi_llc_req_t axi_llc_mst_req;
+  axi_llc_rsp_t axi_llc_mst_rsp;
 
 `ifdef USE_DDR
   dram_wrapper_xilinx #(
@@ -557,60 +468,110 @@ module cheshire_top_xilinx import cheshire_pkg::*; #(
     .axi_soc_ar_chan_t ( axi_llc_ar_chan_t ),
     .axi_soc_r_chan_t  ( axi_llc_r_chan_t  ),
     .axi_soc_req_t     ( axi_llc_req_t     ),
-    .axi_soc_resp_t    ( axi_llc_rsp_t     ),
-    .Ddr4CsNWidth      ( Ddr4CsNWidth      ),
-    .Ddr4DmDbiNWidth   ( Ddr4DmDbiNWidth   ),
-    .Ddr4DqWidth       ( Ddr4DqWidth       ),
-    .Ddr4DqsWidth      ( Ddr4DqsWidth      )
-  ) i_dram_wrapper (
-    .sys_rst_i    ( sys_rst ),
-    .soc_resetn_i ( rst_n   ),
-    .soc_clk_i    ( soc_clk ),
-    .dram_clk_i   ( sys_clk ),
-    .soc_req_i    ( axi_dram_mst_req ),
-    .soc_rsp_o    ( axi_dram_mst_rsp ),
-    .*
-  );
+    .axi_soc_resp_t    ( axi_llc_rsp_t     )
+) i_dram_wrapper (
+    .sys_rst_i      ( sys_rst          ),
+    .soc_resetn_i   ( rst_n            ),
+    .soc_clk_i      ( soc_clk          ),
+    .dram_clk_i     ( sys_clk          ),
+    .soc_req_i      ( axi_llc_mst_req  ),
+    .soc_rsp_o      ( axi_llc_mst_rsp  ),
+`ifdef USE_ZYNQMP
+    .ps_hp0_aclk    ( ps_hp0_aclk      ),
+    .ps_hp0_awid    ( ps_hp0_awid      ),
+    .ps_hp0_awaddr  ( ps_hp0_awaddr    ),
+    .ps_hp0_awlen   ( ps_hp0_awlen     ),
+    .ps_hp0_awsize  ( ps_hp0_awsize    ),
+    .ps_hp0_awburst ( ps_hp0_awburst   ),
+    .ps_hp0_awlock  ( ps_hp0_awlock    ),
+    .ps_hp0_awcache ( ps_hp0_awcache   ),
+    .ps_hp0_awprot  ( ps_hp0_awprot    ),
+    .ps_hp0_awqos   ( ps_hp0_awqos     ),
+    .ps_hp0_awvalid ( ps_hp0_awvalid   ),
+    .ps_hp0_awready ( ps_hp0_awready   ),
+    .ps_hp0_wdata   ( ps_hp0_wdata     ),
+    .ps_hp0_wstrb   ( ps_hp0_wstrb     ),
+    .ps_hp0_wlast   ( ps_hp0_wlast     ),
+    .ps_hp0_wvalid  ( ps_hp0_wvalid    ),
+    .ps_hp0_wready  ( ps_hp0_wready    ),
+    .ps_hp0_bid     ( ps_hp0_bid       ),
+    .ps_hp0_bresp   ( ps_hp0_bresp     ),
+    .ps_hp0_bvalid  ( ps_hp0_bvalid    ),
+    .ps_hp0_bready  ( ps_hp0_bready    ),
+    .ps_hp0_arid    ( ps_hp0_arid      ),
+    .ps_hp0_araddr  ( ps_hp0_araddr    ),
+    .ps_hp0_arlen   ( ps_hp0_arlen     ),
+    .ps_hp0_arsize  ( ps_hp0_arsize    ),
+    .ps_hp0_arburst ( ps_hp0_arburst   ),
+    .ps_hp0_arlock  ( ps_hp0_arlock    ),
+    .ps_hp0_arcache ( ps_hp0_arcache   ),
+    .ps_hp0_arprot  ( ps_hp0_arprot    ),
+    .ps_hp0_arqos   ( ps_hp0_arqos     ),
+    .ps_hp0_arvalid ( ps_hp0_arvalid   ),
+    .ps_hp0_arready ( ps_hp0_arready   ),
+    .ps_hp0_rid     ( ps_hp0_rid       ),
+    .ps_hp0_rdata   ( ps_hp0_rdata     ),
+    .ps_hp0_rresp   ( ps_hp0_rresp     ),
+    .ps_hp0_rlast   ( ps_hp0_rlast     ),
+    .ps_hp0_rvalid  ( ps_hp0_rvalid    ),
+    .ps_hp0_rready  ( ps_hp0_rready    )
+`endif
+  ); 
 `endif
 
-  ////////////////
-  // DRAM Delay //
-  ////////////////
+`ifdef USE_ZYNQMP
+  // Εσωτερικά καλώδια UART
+  logic uart_tx_o;
+  logic uart_rx_i;
 
-`ifdef USE_RAM_DELAY
-  axi_fifo_delay_dyn #(
-    .aw_chan_t  ( axi_llc_aw_chan_t ),
-    .w_chan_t   ( axi_llc_w_chan_t  ),
-    .b_chan_t   ( axi_llc_b_chan_t  ),
-    .ar_chan_t  ( axi_llc_ar_chan_t ),
-    .r_chan_t   ( axi_llc_r_chan_t  ),
-    .axi_req_t  ( axi_llc_req_t     ),
-    .axi_resp_t ( axi_llc_rsp_t     ),
-    .DepthAR    ( 32 ), // Power of two
-    .DepthAW    ( 32 ), // Power of two
-    .DepthR     ( 32 ), // Power of two
-    .DepthW     ( 32 ), // Power of two
-    .DepthB     ( 32 ), // Power of two
-    .MaxDelay   ( 2**15-1 ) // This is a bit backwards, but defines 16-bit delay timers.
-  ) i_axi_fifo_delay_dyn (
-    .clk_i      ( soc_clk ),
-    .rst_ni     ( rst_n   ),
-    .aw_delay_i ( reg2hw.dram_aw_delay ),
-    .w_delay_i  ( reg2hw.dram_w_delay  ),
-    .b_delay_i  ( reg2hw.dram_b_delay  ),
-    .ar_delay_i ( reg2hw.dram_ar_delay ),
-    .r_delay_i  ( reg2hw.dram_r_delay  ),
-    .slv_req_i  ( axi_llc_mst_req ),
-    .slv_resp_o ( axi_llc_mst_rsp ),
-    .mst_req_o  ( axi_dram_mst_req ),
-    .mst_resp_i ( axi_dram_mst_rsp )
+  zynqmp i_zynqmp (
+    .saxihp0_fpd_aclk  ( ps_hp0_aclk    ),
+    .saxigp2_awid      ( ps_hp0_awid    ),
+    .saxigp2_awaddr    ( {17'b0, ps_hp0_awaddr} ),
+    .saxigp2_awlen     ( ps_hp0_awlen   ),
+    .saxigp2_awsize    ( ps_hp0_awsize  ),
+    .saxigp2_awburst   ( ps_hp0_awburst ),
+    .saxigp2_awlock    ( ps_hp0_awlock  ),
+    .saxigp2_awcache   ( ps_hp0_awcache ),
+    .saxigp2_awprot    ( ps_hp0_awprot  ),
+    .saxigp2_awqos     ( ps_hp0_awqos   ),
+    .saxigp2_awvalid   ( ps_hp0_awvalid ),
+    .saxigp2_awready   ( ps_hp0_awready ),
+    .saxigp2_wdata     ( ps_hp0_wdata   ),
+    .saxigp2_wstrb     ( ps_hp0_wstrb   ),
+    .saxigp2_wlast     ( ps_hp0_wlast   ),
+    .saxigp2_wvalid    ( ps_hp0_wvalid  ),
+    .saxigp2_wready    ( ps_hp0_wready  ),
+    .saxigp2_bid       ( ps_hp0_bid     ),
+    .saxigp2_bresp     ( ps_hp0_bresp   ),
+    .saxigp2_bvalid    ( ps_hp0_bvalid  ),
+    .saxigp2_bready    ( ps_hp0_bready  ),
+    .saxigp2_arid      ( ps_hp0_arid    ),
+    .saxigp2_araddr    ( {17'b0, ps_hp0_araddr} ),
+    .saxigp2_arlen     ( ps_hp0_arlen   ),
+    .saxigp2_arsize    ( ps_hp0_arsize  ),
+    .saxigp2_arburst   ( ps_hp0_arburst ),
+    .saxigp2_arlock    ( ps_hp0_arlock  ),
+    .saxigp2_arcache   ( ps_hp0_arcache ),
+    .saxigp2_arprot    ( ps_hp0_arprot  ),
+    .saxigp2_arqos     ( ps_hp0_arqos   ),
+    .saxigp2_arvalid   ( ps_hp0_arvalid ),
+    .saxigp2_arready   ( ps_hp0_arready ),
+    .saxigp2_rid       ( ps_hp0_rid     ),
+    .saxigp2_rdata     ( ps_hp0_rdata   ),
+    .saxigp2_rresp     ( ps_hp0_rresp   ),
+    .saxigp2_rlast     ( ps_hp0_rlast   ),
+    .saxigp2_rvalid    ( ps_hp0_rvalid  ),
+    .saxigp2_rready    ( ps_hp0_rready  ),
+    .emio_uart1_rxd    ( uart_tx_o      ),
+    .emio_uart1_txd    ( uart_rx_i      ),
+    .emio_gpio_i       ( 1'b0           ),
+    .emio_gpio_o       ( ps_gpio_o      ),
+    .emio_gpio_t       (                ),
+    .maxihpm0_lpd_aclk ( soc_clk        )
   );
-`else
-  assign axi_dram_mst_req = axi_llc_mst_req;
-  assign axi_llc_mst_rsp  = axi_dram_mst_rsp;
 `endif
-
-  //////////////////
+    
   // Cheshire SoC //
   //////////////////
 
@@ -637,13 +598,8 @@ module cheshire_top_xilinx import cheshire_pkg::*; #(
     .axi_ext_mst_rsp_o  ( ),
     .axi_ext_slv_req_o  ( ),
     .axi_ext_slv_rsp_i  ( '0 ),
-`ifdef USE_CFG_REGS
-    .reg_ext_slv_req_o  ( cfg_reg_req ),
-    .reg_ext_slv_rsp_i  ( cfg_reg_rsp ),
-`else
     .reg_ext_slv_req_o  ( ),
     .reg_ext_slv_rsp_i  ( '0 ),
-`endif
     .intr_ext_i         ( '0 ),
     .intr_ext_o         ( ),
     .xeip_ext_o         ( ),
@@ -696,5 +652,8 @@ module cheshire_top_xilinx import cheshire_pkg::*; #(
     .usb_dp_o,
     .usb_dp_oe_o
   );
+
+  // ILA-DEBUG: the UART TX probes were removed -- that question is settled
+  // (Cheshire transmits; PS UART1 is on MIO, not EMIO). See AGENT_NOTES §11.4.
 
 endmodule
