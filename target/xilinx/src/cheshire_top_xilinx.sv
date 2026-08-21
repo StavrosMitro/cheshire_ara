@@ -77,8 +77,19 @@ module cheshire_top_xilinx import cheshire_pkg::*; (
   `DDR3_INTF
 `endif
 
-  output logic  uart_tx_o,
-  input  logic  uart_rx_i,
+  `ifndef USE_ZYNQMP
+    output logic  uart_tx_o,
+    input  logic  uart_rx_i,
+  `endif
+
+  `ifdef USE_ZYNQMP
+    // Η διεπαφή AXI (Μπαλαντέζα) προς το Zynq PS
+    `ZYNQMP_HP0_MST_INTF
+    // Τα φυσικά pins του ARM (MIOs) και της DDR4 μνήμης του
+    inout  wire [53:0] ps_mio,
+    inout  wire        ps_ddr_vrp,
+    inout  wire        ps_ddr_vrn,
+  `endif
 
   inout  wire [UsbNumPorts-1:0] usb_dm_io,
   inout  wire [UsbNumPorts-1:0] usb_dp_io
@@ -141,12 +152,19 @@ module cheshire_top_xilinx import cheshire_pkg::*; (
   /////////////////////
 
   // Select SoC reset
+// Select SoC reset
 `ifdef USE_RESET
   logic sys_resetn;
   assign sys_resetn = ~sys_reset;
 `elsif USE_RESETN
   logic sys_reset;
   assign sys_reset  = ~sys_resetn;
+`elsif USE_ZYNQMP
+  // Το Reset προέρχεται από το GPIO του PS (ARM) — δεν είναι κουμπί της πλακέτας.
+  logic sys_reset, sys_resetn;
+  logic ps_gpio_o;
+  assign sys_reset  = ps_gpio_o;
+  assign sys_resetn = ~sys_reset;
 `endif
 
   // Tie off inputs of no switches
@@ -413,6 +431,70 @@ module cheshire_top_xilinx import cheshire_pkg::*; (
     .soc_req_i    ( axi_llc_mst_req ),
     .soc_rsp_o    ( axi_llc_mst_rsp ),
     .*
+  );
+`endif
+
+
+`ifdef USE_ZYNQMP
+  // Εσωτερικά καλώδια UART: Το Cheshire μιλάει με το PS UART1 μέσω EMIO
+  logic uart_tx_o, uart_rx_i;  
+
+  zynqmp i_zynqmp (
+    // ---- AXI HP0 slave (Cheshire AXI master → PS DDR) ----
+    .saxigp2_aclk       ( ps_hp0_aclk   ),    
+    .saxigp2_awid       ( ps_hp0_awid   ),
+    // ΜΕΤΑΦΡΑΣΗ ΔΙΕΥΘΥΝΣΗΣ: Γεμίζουμε με 17 μηδενικά για να πάμε από τα 32 στα 49 bits του Zynq
+    .saxigp2_awaddr     ( {17'b0, ps_hp0_awaddr} ), 
+    .saxigp2_awlen      ( ps_hp0_awlen  ),
+    .saxigp2_awsize     ( ps_hp0_awsize ),
+    .saxigp2_awburst    ( ps_hp0_awburst),
+    .saxigp2_awlock     ( ps_hp0_awlock ),
+    .saxigp2_awcache    ( ps_hp0_awcache),
+    .saxigp2_awprot     ( ps_hp0_awprot ),
+    .saxigp2_awqos      ( ps_hp0_awqos  ),
+    .saxigp2_awvalid    ( ps_hp0_awvalid),
+    .saxigp2_awready    ( ps_hp0_awready),
+    .saxigp2_wdata      ( ps_hp0_wdata  ),
+    .saxigp2_wstrb      ( ps_hp0_wstrb  ),
+    .saxigp2_wlast      ( ps_hp0_wlast  ),
+    .saxigp2_wvalid     ( ps_hp0_wvalid ),
+    .saxigp2_wready     ( ps_hp0_wready ),
+    .saxigp2_bid        ( ps_hp0_bid    ),
+    .saxigp2_bresp      ( ps_hp0_bresp  ),
+    .saxigp2_bvalid     ( ps_hp0_bvalid ),
+    .saxigp2_bready     ( ps_hp0_bready ),
+    .saxigp2_arid       ( ps_hp0_arid   ),
+    .saxigp2_araddr     ( {17'b0, ps_hp0_araddr} ),
+    .saxigp2_arlen      ( ps_hp0_arlen  ),
+    .saxigp2_arsize     ( ps_hp0_arsize ),
+    .saxigp2_arburst    ( ps_hp0_arburst),
+    .saxigp2_arlock     ( ps_hp0_arlock ),
+    .saxigp2_arcache    ( ps_hp0_arcache),
+    .saxigp2_arprot     ( ps_hp0_arprot ),
+    .saxigp2_arqos      ( ps_hp0_arqos  ),
+    .saxigp2_arvalid    ( ps_hp0_arvalid),
+    .saxigp2_arready    ( ps_hp0_arready),
+    .saxigp2_rid        ( ps_hp0_rid    ),
+    .saxigp2_rdata      ( ps_hp0_rdata  ),
+    .saxigp2_rresp      ( ps_hp0_rresp  ),
+    .saxigp2_rlast      ( ps_hp0_rlast  ),
+    .saxigp2_rvalid     ( ps_hp0_rvalid ),
+    .saxigp2_rready     ( ps_hp0_rready ),
+    
+    // ---- UART1 EMIO (Κερκόπορτα) ----
+    // Προσοχή: Εδώ γίνεται "σταύρωμα". Το TX του Ara πάει στο RX του ARM.
+    .emio_uart1_rxd     ( uart_tx_o     ), 
+    .emio_uart1_txd     ( uart_rx_i     ), 
+    
+    // ---- GPIO EMIO[0] (Έλεγχος Reset) ----
+    .emio_gpio_i        ( 1'b0          ),
+    .emio_gpio_o        ( ps_gpio_o     ),
+    .emio_gpio_t        (               ),
+    
+    // ---- PS MIO & Board-level signals ----
+    .mio                ( ps_mio        ),
+    .ddr_vrp            ( ps_ddr_vrp    ),
+    .ddr_vrn            ( ps_ddr_vrn    )
   );
 `endif
 

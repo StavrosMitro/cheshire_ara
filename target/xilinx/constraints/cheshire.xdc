@@ -54,11 +54,17 @@ set_false_path -hold -from [get_ports jtag_trst_ni]
 # UART speed is at most 5 Mb/s
 set UART_IO_SPEED 200.0
 
-set_max_delay [expr { $UART_IO_SPEED * 0.35 }] -from [get_ports uart_rx_i]
-set_false_path -hold -from [get_ports uart_rx_i]
+# Εφάρμοσε constraints μόνο αν υπάρχουν τα φυσικά ports 
+# (Δεν υπάρχουν στο ZCU102, διότι το UART περνάει μέσω Zynq EMIO)
+if { [llength [get_ports -quiet uart_rx_i]] > 0 } {
+    set_max_delay [expr { $UART_IO_SPEED * 0.35 }] -from [get_ports uart_rx_i]
+    set_false_path -hold -from [get_ports uart_rx_i]
+}
 
-set_max_delay [expr { $UART_IO_SPEED * 0.35 }] -to [get_ports uart_tx_o]
-set_false_path -hold -to [get_ports uart_tx_o]
+if { [llength [get_ports -quiet uart_tx_o]] > 0 } {
+    set_max_delay [expr { $UART_IO_SPEED * 0.35 }] -to [get_ports uart_tx_o]
+    set_false_path -hold -to [get_ports uart_tx_o]
+}
 
 ########
 # CDCs #

@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat /tmp/claude-1000/-home-stavros-coroni-server-cheshire_soc/13003c68-90eb-468c-956c-a414385c6931/tasks/bjeplzrmz.output)",
+      "Read(//tmp/claude-1000/-home-stavros-coroni-server-cheshire_soc/13003c68-90eb-468c-956c-a414385c6931/tasks/**)"
+    ]
+  }
+}

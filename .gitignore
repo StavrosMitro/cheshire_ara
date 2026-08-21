@@ -43,3 +43,8 @@ target/xilinx/build
 target/xilinx/out
 target/xilinx/scripts/add_sources.*
 vivado*
+cva6_patched/
+deps/ara/
+deps/ara_my_fork/
+ara_patched/
+ara_myfork/

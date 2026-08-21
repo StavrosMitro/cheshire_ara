@@ -87,6 +87,36 @@ switch $proj {
                     CONFIG.CLKOUT4_PHASE_ERROR {89.971} \
                     ] [get_ips $proj]
             }
+            zcu102 {
+                # ZCU102 Input Clock = 125 MHz. 
+                # Multiplier 9.6 -> VCO 1200 MHz. (1200 / 24 = 50 MHz)
+                set_property -dict [list \
+                    CONFIG.CLK_IN1_BOARD_INTERFACE {Custom} \
+                    CONFIG.RESET_BOARD_INTERFACE {Custom} \
+                    CONFIG.USE_RESET {false} \
+                    CONFIG.PRIM_SOURCE {No_buffer} \
+                    CONFIG.PRIM_IN_FREQ {125.000} \
+                    CONFIG.CLKOUT1_USED {true} \
+                    CONFIG.CLKOUT2_USED {true} \
+                    CONFIG.CLKOUT3_USED {true} \
+                    CONFIG.CLKOUT4_USED {true} \
+                    CONFIG.CLK_OUT1_PORT {clk_50} \
+                    CONFIG.CLK_OUT2_PORT {clk_48} \
+                    CONFIG.CLK_OUT3_PORT {clk_20} \
+                    CONFIG.CLK_OUT4_PORT {clk_10} \
+                    CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {50.000} \
+                    CONFIG.CLKOUT2_REQUESTED_OUT_FREQ {48.000} \
+                    CONFIG.CLKOUT3_REQUESTED_OUT_FREQ {20.000} \
+                    CONFIG.CLKOUT4_REQUESTED_OUT_FREQ {10.000} \
+                    CONFIG.MMCM_CLKFBOUT_MULT_F {9.600} \
+                    CONFIG.MMCM_CLKIN1_PERIOD {8.000} \
+                    CONFIG.MMCM_CLKOUT0_DIVIDE_F {24.000} \
+                    CONFIG.MMCM_CLKOUT1_DIVIDE {25} \
+                    CONFIG.MMCM_CLKOUT2_DIVIDE {60} \
+                    CONFIG.MMCM_CLKOUT3_DIVIDE {120} \
+                    CONFIG.NUM_OUT_CLKS {4} \
+                    ] [get_ips $proj]
+            }
             default { nocfgexit $proj $board }
         }
     }
@@ -106,6 +136,17 @@ switch $proj {
                     ] [get_ips $proj]
             }
             vcu128 {
+                set_property -dict [list \
+                    CONFIG.C_NUM_PROBE_OUT {3} \
+                    CONFIG.C_PROBE_OUT0_INIT_VAL {0x0} \
+                    CONFIG.C_PROBE_OUT1_INIT_VAL {0x2} \
+                    CONFIG.C_PROBE_OUT2_INIT_VAL {0x1} \
+                    CONFIG.C_PROBE_OUT1_WIDTH {2} \
+                    CONFIG.C_EN_PROBE_IN_ACTIVITY {0} \
+                    CONFIG.C_NUM_PROBE_IN {0} \
+                    ] [get_ips $proj]
+            }
+            zcu102 {
                 set_property -dict [list \
                     CONFIG.C_NUM_PROBE_OUT {3} \
                     CONFIG.C_PROBE_OUT0_INIT_VAL {0x0} \
@@ -160,6 +201,26 @@ switch $proj {
                     CONFIG.C0.BANK_GROUP_WIDTH {1} \
                     CONFIG.C0.CS_WIDTH {2} \
                     CONFIG.C0.DDR4_AxiSelection {true} \
+                    ] [get_ips $proj]
+            }
+            default { nocfgexit $proj $board }
+        }
+    }
+
+    zynqmp {
+        set_property board_part \
+            [lindex [get_board_parts -quiet -filter {name =~ "*zcu102*"}] end] \
+            [current_project]
+        create_ip -name zynq_ultra_ps_e -vendor xilinx.com -library ip -version 3.3 -module_name $proj
+        switch $board {
+            zcu102 {
+                set_property -dict [list \
+                    CONFIG.PSU__USE__S_AXI_GP2 {1} \
+                    CONFIG.PSU__SAXIGP2__DATA_WIDTH {128} \
+                    CONFIG.PSU__UART1__PERIPHERAL__ENABLE {1} \
+                    CONFIG.PSU__UART1__PERIPHERAL__IO {EMIO} \
+                    CONFIG.PSU__GPIO_EMIO__PERIPHERAL__ENABLE {1} \
+                    CONFIG.PSU__GPIO_EMIO__PERIPHERAL__IO {1} \
                     ] [get_ips $proj]
             }
             default { nocfgexit $proj $board }

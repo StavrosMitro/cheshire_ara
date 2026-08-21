@@ -1,0 +1,11 @@
+// Copyright 2024 ETH Zurich and University of Bologna.
+// Solderpad Hardware License, Version 0.51, see LICENSE for details.
+// SPDX-License-Identifier: SHL-0.51
+
+/include/ "cheshire.dtsi"
+
+// Για το ZCU102 (Zynq MPSoC), το boot και η Flash μνήμη ελέγχονται αποκλειστικά 
+// από το Processing System (ARM). Το Programmable Logic (Cheshire) δεν 
+// επικοινωνεί άμεσα με καμία SPI Flash.
+// Συνεπώς, κάνουμε include μόνο το βασικό hardware (CPU, UART, Memory) 
+// και παραλείπουμε πλήρως το &spi node.

@@ -6,3 +6,5 @@
 	path = sw/deps/cva6-sdk
 	url = https://github.com/pulp-platform/cva6-sdk.git
 	ignore = dirty
+[submodule "core/cache_subsystem/hpdcache"]
+	url = https://your_username:your_token@github.com/paulsc96/cv-hpdcache.git

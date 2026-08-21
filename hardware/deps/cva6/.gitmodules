@@ -1,0 +1,2 @@
+[submodule "core/cache_subsystem/hpdcache"]
+	url = https://your_username:your_token@github.com/paulsc96/cv-hpdcache.git

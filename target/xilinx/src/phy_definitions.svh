@@ -29,10 +29,11 @@
 `endif
 
 `ifdef TARGET_ZCU102
-  `define USE_RESET
-  `define USE_JTAG
-  `define USE_DDR4
-  `define USE_VIO
+  // `define USE_RESET
+  // `define USE_JTAG
+  // `define USE_DDR4
+  // `define USE_VIO
+  `define USE_ZYNQMP
 `endif
 
 /////////////////////

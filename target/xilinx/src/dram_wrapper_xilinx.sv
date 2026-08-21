@@ -32,6 +32,8 @@ module dram_wrapper_xilinx #(
 `endif
 `ifdef USE_DDR3
   `DDR3_INTF
+`ifdef USE_ZYNQMP
+  `ZYNQMP_HP0_MST_INTF
 `endif
   // DRAM AXI interface
   input  axi_soc_req_t  soc_req_i,
@@ -76,6 +78,19 @@ module dram_wrapper_xilinx #(
     StrobeWidth   : 8,
     MaxUniqIds    : 8,    // TODO: suboptimal, but limited by CVA6/LLC
     MaxTxns       : 24    // TODO: suboptimal, but limited by CVA6/LLC
+  };
+`endif
+
+`ifdef TARGET_ZCU102
+  localparam dram_cfg_t cfg = '{
+    EnCdc         : 0,    // same clock
+    CdcLogDepth   : 3,    // orrelevant while having same clock
+    IdWidth       : 6,    // PS HP0 supports 6-bit AXI IDs
+    AddrWidth     : 32,   // addr of ara
+    DataWidth     : 128,  // data width PS HP0 port
+    StrobeWidth   : 16,   // 128 / 8 = 16
+    MaxUniqIds    : 8,
+    MaxTxns       : 24
   };
 `endif
 
@@ -358,6 +373,61 @@ module dram_wrapper_xilinx #(
     // PHY
     .*
   );
+
+
+`ifdef USE_ZYNQMP
+
+//inside clock on system connected
+  assign dram_axi_clk = soc_clk_i;
+  assign dram_rst_o   = ~soc_resetn_i;
+
+  assign ps_hp0_aclk    = soc_clk_i;
+
+  assign ps_hp0_awid    = cdc_dram_req.aw.id;
+  assign ps_hp0_awaddr  = cdc_dram_req_aw_addr;
+  assign ps_hp0_awlen   = cdc_dram_req.aw.len;
+  assign ps_hp0_awsize  = cdc_dram_req.aw.size;
+  assign ps_hp0_awburst = cdc_dram_req.aw.burst;
+  assign ps_hp0_awlock  = cdc_dram_req.aw.lock;
+  assign ps_hp0_awcache = cdc_dram_req.aw.cache;
+  assign ps_hp0_awprot  = cdc_dram_req.aw.prot;
+  assign ps_hp0_awqos   = cdc_dram_req.aw.qos;
+  assign ps_hp0_awvalid = cdc_dram_req.aw_valid;
+  assign cdc_dram_rsp.aw_ready = ps_hp0_awready;
+
+  // ---(Write Data) ---
+  assign ps_hp0_wdata   = cdc_dram_req.w.data;
+  assign ps_hp0_wstrb   = cdc_dram_req.w.strb;
+  assign ps_hp0_wlast   = cdc_dram_req.w.last;
+  assign ps_hp0_wvalid  = cdc_dram_req.w_valid;
+  assign cdc_dram_rsp.w_ready = ps_hp0_wready;
+
+  // --- (Write Response) ---
+  assign cdc_dram_rsp.b.id    = ps_hp0_bid;
+  assign cdc_dram_rsp.b.resp  = ps_hp0_bresp;
+  assign cdc_dram_rsp.b_valid = ps_hp0_bvalid;
+  assign ps_hp0_bready        = cdc_dram_req.b_ready;
+
+  // --- (Read Address) ---
+  assign ps_hp0_arid    = cdc_dram_req.ar.id;
+  assign ps_hp0_araddr  = cdc_dram_req_ar_addr;
+  assign ps_hp0_arlen   = cdc_dram_req.ar.len;
+  assign ps_hp0_arsize  = cdc_dram_req.ar.size;
+  assign ps_hp0_arburst = cdc_dram_req.ar.burst;
+  assign ps_hp0_arlock  = cdc_dram_req.ar.lock;
+  assign ps_hp0_arcache = cdc_dram_req.ar.cache;
+  assign ps_hp0_arprot  = cdc_dram_req.ar.prot;
+  assign ps_hp0_arqos   = cdc_dram_req.ar.qos;
+  assign ps_hp0_arvalid = cdc_dram_req.ar_valid;
+  assign cdc_dram_rsp.ar_ready = ps_hp0_arready;
+
+  // --- (Read Data) ---
+  assign cdc_dram_rsp.r.id    = ps_hp0_rid;
+  assign cdc_dram_rsp.r.data  = ps_hp0_rdata;
+  assign cdc_dram_rsp.r.resp  = ps_hp0_rresp;
+  assign cdc_dram_rsp.r.last  = ps_hp0_rlast;
+  assign cdc_dram_rsp.r_valid = ps_hp0_rvalid;
+  assign ps_hp0_rready        = cdc_dram_req.r_ready;
 `endif  // USE_DDR3
 
 endmodule
