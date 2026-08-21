@@ -6,7 +6,7 @@
 # Sys Clock #
 #############
 
-# ZCU102 300 MHz ( 3.333 ) — HP-bank system clock on AL8/AL7
+# ZCU102 125 MHz ( 8 )
 set SYS_TCK 3.333
 create_clock -period $SYS_TCK -name sys_clk [get_ports sys_clk_p]
 
@@ -19,13 +19,12 @@ set_property CLOCK_DEDICATED_ROUTE BACKBONE [get_nets soc_clk]
 # Assign Pins #
 ###############
 
-# --- System Clock (125 MHz Differential, G21/F21 = HD bank: CANNOT drive MMCM, PLHDIO-4) ---
+# --- System Clock (125 MHz Differential, Bank 65) ---
 #set_property PACKAGE_PIN G21 [get_ports sys_clk_p]
-#set_property IOSTANDARD LVDS_25 [get_ports sys_clk_p]
+#set_property IOSTANDARD LVDS [get_ports sys_clk_p]
 #set_property PACKAGE_PIN F21 [get_ports sys_clk_n]
-#set_property IOSTANDARD LVDS_25 [get_ports sys_clk_n]
+#set_property IOSTANDARD LVDS [get_ports sys_clk_n]
 
-# --- System Clock (300 MHz Differential, AL8/AL7 = HP bank, clock-capable) ---
 set_property PACKAGE_PIN AL8 [get_ports sys_clk_p]
 set_property IOSTANDARD DIFF_SSTL12 [get_ports sys_clk_p]
 set_property PACKAGE_PIN AL7 [get_ports sys_clk_n]

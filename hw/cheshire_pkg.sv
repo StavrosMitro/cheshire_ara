@@ -73,6 +73,18 @@ package cheshire_pkg;
     // control the CIE region's size and whether it abuts with the top or bottom of this range.
     doub_bt Cva6ExtCieLength;
     bit     Cva6ExtCieOnTop;
+    // K5 3a: gates whether the non-CIE range above (the DRAM/ExtNonCI non-
+    // idempotent rule, index 0 in NonIdempotentAddrBase/Length) is actually
+    // marked non-idempotent. Default 1 preserves every existing target's
+    // behavior unchanged. Only the zcu102 target sets this 0 (in
+    // gen_cheshire_xilinx_cfg(), target/xilinx/src/cheshire_top_xilinx.sv),
+    // because on that board .text is loaded into this exact DRAM range and
+    // cva6_icache.sv's speculative-fetch gate (spec && addr_ni) deadlocks
+    // permanently when a blocked fetch is itself the branch whose resolution
+    // would clear spec -- see AGENT_NOTES_ZCU102.md SS17. Any instance that
+    // genuinely attaches non-idempotent I/O in [0x4000_0000,0x8000_0000)
+    // must leave this at its default.
+    bit     Cva6NiDramRule;
     // Hart parameters
     bit [MaxCoresWidth-1:0] NumCores;
     doub_bt NumExtIrqHarts;
@@ -504,7 +516,16 @@ package cheshire_pkg;
     ret.NrNonIdempotentRules  = 2;   // Periphs, ExtNonCI;
     ret.NonIdempotentAddrBase = {64'h0000_0000, NoCieBase};
     ret.NOCType               = config_pkg::NOC_TYPE_AXI4_ATOP;
-    ret.NonIdempotentLength   = {64'h1000_0000, 64'h6000_0000 - cfg.Cva6ExtCieLength};
+    // K5 3a: rule index 0 (DRAM/ExtNonCI) is zeroed out, not just narrowed,
+    // when Cva6NiDramRule=0. range_check(base, 0, addr) is always false
+    // (config_pkg.sv: (addr>=base) && (addr<base)), so the rule dies while
+    // NonIdempotentAddrBase[0] is untouched -- load_unit.sv's elaboration
+    // guard on NI_DRAM_BASE==0x4000_0000 still passes. Rule index 1
+    // (peripherals) is untouched by this field on purpose: NonIdemPotenceEn
+    // must stay 1, since it also gates wt_dcache_wbuffer.sv's ni_conflict
+    // store serialization for peripheral stores.
+    ret.NonIdempotentLength   = {64'h1000_0000,
+        cfg.Cva6NiDramRule ? (64'h6000_0000 - cfg.Cva6ExtCieLength) : 64'h0};
     ret.NrExecuteRegionRules  = 5;   // Debug, Bootrom, AllSPM, LLCOut, ExtCI;
     ret.ExecuteRegionAddrBase = {AmDbg, AmBrom, AmSpm, cfg.LlcOutRegionStart, CieBase};
     ret.ExecuteRegionLength   = {64'h40000, 64'h40000, 2*SizeSpm, SizeLlcOut, cfg.Cva6ExtCieLength};
@@ -542,6 +563,7 @@ package cheshire_pkg;
     Cva6NrPMPEntries  : 0,
     Cva6ExtCieLength  : 'h2000_0000,  // [0x2.., 0x4..) is CIE, [0x4.., 0x8..) is non-CIE
     Cva6ExtCieOnTop   : 0,
+    Cva6NiDramRule    : 1,  // default ON; zcu102 overrides to 0, see cheshire_pkg.sv struct comment
     // Harts
     NumCores          : 1,
     CoreMaxTxns       : 8,
@@ -605,7 +627,7 @@ package cheshire_pkg;
     LlcAmoNumCuts     : 1,
     LlcAmoPostCut     : 1,
     LlcOutConnect     : 1,
-    LlcOutRegionStart : 'h8000_0000,
+    LlcOutRegionStart : 'h4000_0000,
     LlcOutRegionEnd   : 64'h1_0000_0000,
     // VGA: RGB565
     VgaRedWidth       : 5,

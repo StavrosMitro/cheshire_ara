@@ -48,3 +48,37 @@ deps/ara/
 deps/ara_my_fork/
 ara_patched/
 ara_myfork/
+
+# Massive Vivado Checkpoints & Build Folders
+target/xilinx/ckpt/
+cva6_patched/
+
+# Logs and Xilinx Junk
+*.log
+*.jou
+webtalk.*
+hs_err_pid*.log
+
+# Backups
+*.bak
+*.bak_*
+
+# Text Notes / IDEs
+*.txt
+AGENT_NOTES*.md
+fpga_port_archive.md
+.vscode/
+.claude/
+
+# Heavy dependencies and caches
+.bender/
+deps/ara/
+deps/ara_my_fork/
+
+# Vivado build directories and checkpoints
+target/xilinx/build/
+target/xilinx/ckpt/
+*.dcp
+*.bit
+*.bin
+

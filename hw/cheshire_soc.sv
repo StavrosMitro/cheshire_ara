@@ -561,7 +561,9 @@ module cheshire_soc import cheshire_pkg::*; #(
   localparam config_pkg::cva6_cfg_t Cva6Cfg = build_config_pkg::build_config(Cva6UsrCfg);
 
   // Boot from boot ROM only if available, otherwise from platform ROM
-  localparam logic [63:0] BootAddr = 64'(Cfg.Bootrom ? AmBrom : Cfg.PlatformRom);
+  //localparam logic [63:0] BootAddr = 64'(Cfg.Bootrom ? AmBrom : Cfg.PlatformRom); <------- initial it reads from zsl
+
+  localparam logic [63:0] BootAddr = 64'h4000_0000;
 
   // Debug interface for internal harts
   dm::hartinfo_t [NumIntHarts-1:0] dbg_int_info;

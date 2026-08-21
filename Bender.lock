@@ -18,7 +18,7 @@ packages:
     revision: e977bb1be465c27a2a2b8cbc34830b4796af9ccf
     version: null
     source:
-      Git: https://github.com/pulp-platform/ara.git
+      Path: /home/smitropoulos/ara_patched
     dependencies:
     - apb
     - axi
@@ -106,7 +106,7 @@ packages:
     revision: b729cb63632c1cc20d51f26ba351e80c5f52bafb
     version: null
     source:
-      Git: https://github.com/mp-17/cva6.git
+      Path: /home/smitropoulos/cheshire_soc/cva6_patched
     dependencies:
     - axi
     - common_cells

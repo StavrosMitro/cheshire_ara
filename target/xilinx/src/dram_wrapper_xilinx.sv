@@ -32,6 +32,7 @@ module dram_wrapper_xilinx #(
 `endif
 `ifdef USE_DDR3
   `DDR3_INTF
+`endif
 `ifdef USE_ZYNQMP
   `ZYNQMP_HP0_MST_INTF
 `endif
@@ -83,14 +84,22 @@ module dram_wrapper_xilinx #(
 
 `ifdef TARGET_ZCU102
   localparam dram_cfg_t cfg = '{
-    EnCdc         : 0,    // same clock
-    CdcLogDepth   : 3,    // orrelevant while having same clock
+    // Same clock as HP0, but enable the CDC anyway: with EnCdc=0 the
+    // iw_converter master port was wired combinationally to the PS HP0 pins --
+    // the only target with zero buffering/registering at the DRAM boundary,
+    // and the only one that wedges under back-to-back write bursts (fmatmul
+    // vector kernel; test_deep_combo scalar stores). With EnCdc=1 the CDC
+    // degenerates to a 32-deep FIFO per AXI channel and registers the
+    // boundary, matching the working VCU128/Genesys2 structure. axi_cdc is
+    // safe with src_clk == dst_clk (dram_axi_clk = soc_clk_i below).
+    EnCdc         : 1,
+    CdcLogDepth   : 5,    // 32-deep per channel, as on VCU128/Genesys2
     IdWidth       : 6,    // PS HP0 supports 6-bit AXI IDs
     AddrWidth     : 32,   // addr of ara
     DataWidth     : 128,  // data width PS HP0 port
     StrobeWidth   : 16,   // 128 / 8 = 16
-    MaxUniqIds    : 8,
-    MaxTxns       : 24
+    MaxUniqIds    : 32,
+    MaxTxns       : 48
   };
 `endif
 
@@ -373,6 +382,7 @@ module dram_wrapper_xilinx #(
     // PHY
     .*
   );
+`endif  // USE_DDR3
 
 
 `ifdef USE_ZYNQMP
@@ -428,6 +438,6 @@ module dram_wrapper_xilinx #(
   assign cdc_dram_rsp.r.last  = ps_hp0_rlast;
   assign cdc_dram_rsp.r_valid = ps_hp0_rvalid;
   assign ps_hp0_rready        = cdc_dram_req.r_ready;
-`endif  // USE_DDR3
+`endif  // USE_ZYNQMP
 
 endmodule

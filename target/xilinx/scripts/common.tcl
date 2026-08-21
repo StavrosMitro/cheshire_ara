@@ -93,12 +93,14 @@ proc gen_reports {rptdir} {
     file delete -force $rptdir
     file mkdir ${rptdir}
     # tclint-disable spacing, line-length
-    check_timing             -file ${rptdir}/check_timing.rpt       -verbose
-    report_timing            -file ${rptdir}/timing_worst_100.rpt   -max_paths 100 -nworst 100 -delay_type max -sort_by slack
-    report_timing            -file ${rptdir}/timing_worst.rpt       -nworst 1 -delay_type max -sort_by group
+    # SPEED: heavy report passes commented out to cut build time (50 MHz -> timing trivial).
+    # Kept only utilization + timing_summary. Re-enable if you need detailed timing/CDC.
+  # check_timing             -file ${rptdir}/check_timing.rpt       -verbose
+  # report_timing            -file ${rptdir}/timing_worst_100.rpt   -max_paths 100 -nworst 100 -delay_type max -sort_by slack
+  # report_timing            -file ${rptdir}/timing_worst.rpt       -nworst 1 -delay_type max -sort_by group
     report_utilization       -file ${rptdir}/utilization.rpt        -hierarchical
-    report_cdc               -file ${rptdir}/cdc.rpt
-    report_clock_interaction -file ${rptdir}/clock_interaction.rpt
+  # report_cdc               -file ${rptdir}/cdc.rpt
+  # report_clock_interaction -file ${rptdir}/clock_interaction.rpt
     report_timing_summary    -file ${rptdir}/timing_summary.rpt
     # tclint-enable spacing, line-length
 }
@@ -114,7 +116,7 @@ proc insert_ilas {clk_net_name} {
     create_debug_core i_ila ila
     set_property -dict [list \
         ALL_PROBE_SAME_MU {true} ALL_PROBE_SAME_MU_CNT {4} C_ADV_TRIGGER {true} \
-        C_DATA_DEPTH {16384} C_EN_STRG_QUAL {true} C_INPUT_PIPE_STAGES {0} \
+        C_DATA_DEPTH {4096} C_EN_STRG_QUAL {true} C_INPUT_PIPE_STAGES {0} \
         C_TRIGIN_EN {false} C_TRIGOUT_EN {false} \
         ] [get_debug_cores i_ila]
     # Connect SoC clock

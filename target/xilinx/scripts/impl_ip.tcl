@@ -88,14 +88,14 @@ switch $proj {
                     ] [get_ips $proj]
             }
             zcu102 {
-                # ZCU102 Input Clock = 125 MHz. 
-                # Multiplier 9.6 -> VCO 1200 MHz. (1200 / 24 = 50 MHz)
+                # ZCU102 Input Clock = 300 MHz (HP-bank system clock, AL8/AL7).
+                # Multiplier 4.0 -> VCO 1200 MHz. (1200 / 24 = 50 MHz)
                 set_property -dict [list \
                     CONFIG.CLK_IN1_BOARD_INTERFACE {Custom} \
                     CONFIG.RESET_BOARD_INTERFACE {Custom} \
                     CONFIG.USE_RESET {false} \
                     CONFIG.PRIM_SOURCE {No_buffer} \
-                    CONFIG.PRIM_IN_FREQ {125.000} \
+                    CONFIG.PRIM_IN_FREQ {300.000} \
                     CONFIG.CLKOUT1_USED {true} \
                     CONFIG.CLKOUT2_USED {true} \
                     CONFIG.CLKOUT3_USED {true} \
@@ -108,8 +108,8 @@ switch $proj {
                     CONFIG.CLKOUT2_REQUESTED_OUT_FREQ {48.000} \
                     CONFIG.CLKOUT3_REQUESTED_OUT_FREQ {20.000} \
                     CONFIG.CLKOUT4_REQUESTED_OUT_FREQ {10.000} \
-                    CONFIG.MMCM_CLKFBOUT_MULT_F {9.600} \
-                    CONFIG.MMCM_CLKIN1_PERIOD {8.000} \
+                    CONFIG.MMCM_CLKFBOUT_MULT_F {4.000} \
+                    CONFIG.MMCM_CLKIN1_PERIOD {3.333} \
                     CONFIG.MMCM_CLKOUT0_DIVIDE_F {24.000} \
                     CONFIG.MMCM_CLKOUT1_DIVIDE {25} \
                     CONFIG.MMCM_CLKOUT2_DIVIDE {60} \
@@ -147,6 +147,10 @@ switch $proj {
                     ] [get_ips $proj]
             }
             zcu102 {
+                # K5 3b: reverted to C_NUM_PROBE_OUT 3 (matching genesys2/
+                # vcu128) -- probe_out3 was the K1/K3/K4 ni_disable_i
+                # diagnostic switch, now removed; the fix it was used to
+                # gate around lives at the config source instead.
                 set_property -dict [list \
                     CONFIG.C_NUM_PROBE_OUT {3} \
                     CONFIG.C_PROBE_OUT0_INIT_VAL {0x0} \
