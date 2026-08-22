@@ -53,3 +53,21 @@ target/xilinx/build
 target/xilinx/out
 target/xilinx/scripts/add_sources.*
 vivado*
+
+# deps/ara is a separately managed checkout with its own .git; don't let
+# it get swept in as a stray embedded repo by a broad `git add`.
+deps/ara/
+
+# cva6_patched is hand-vendored (not a Bender checkout), tracked here so it
+# can't be silently wiped again like it was during the 2026-08-21 merge
+# incident -- but only the RTL actually used by the zcu102 build
+# (target/xilinx/scripts/add_sources.zcu102.tcl). Everything below is
+# vendored verification/doc infra with its own nested .git repos, or
+# otherwise unneeded for synthesis -- tracking it risks the multi-GB
+# bloat this directory was originally excluded from git to avoid.
+cva6_patched/verif/
+cva6_patched/corev_apu/
+cva6_patched/docs/
+cva6_patched/core/cvfpu/
+cva6_patched/core/cache_subsystem/hpdcache/
+cva6_patched/**/*.bak*
