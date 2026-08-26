@@ -87,7 +87,27 @@ insert_ilas {soc_clk}
 # so LUT budget (see AGENT_NOTES_ZCU102.md §4.4/§8) is unaffected.
 # set_property strategy Performance_ExtraTimingOpt [get_runs impl_1]
 # set_property strategy Flow_RuntimeOptimized [get_runs impl_1]
+#
+# 2026-08-26: the justification above is STALE. Those ~27 CVA6 setup endpoints
+# were caused by the ILA mark_debug probes, which are gone -- there is no ILA or
+# VIO in the ZCU102 design any more (see the .ltx guard at the end of this file,
+# and common.tcl's insert_ilas, which returns immediately on zero mark_debug
+# nets). The strategy is kept only because its post-route phys_opt pass is
+# harmless; the individual STEPS directives below are what actually matter now.
+# The binding constraint is no longer timing (WNS +3.4 ns at 50 MHz) but LUT
+# DENSITY: 4 lanes needs 283,731 cells against 274,080 sites.
 set_property strategy Performance_ExplorePostRoutePhysOpt [get_runs impl_1]
+
+# opt_design: the strategy above selects `Explore` (confirmed in impl_1/runme.log
+# line 44). `ExploreArea` is the area-targeted variant. Measured yield of the
+# Explore pass on this design was only 286,493 -> 283,731 (-1.0%), so do not
+# expect much -- but it is free, and area is what we are short of.
+set_property STEPS.OPT_DESIGN.ARGS.DIRECTIVE ExploreArea [get_runs impl_1]
+
+# UTLZ-1 fires as a PRECONDITION DRC of place_design, inside the impl_1 child
+# process that launch_runs spawns -- a set_param here would never reach it.
+# Inject it via a TCL.PRE hook instead. Full rationale in scripts/pre_place.tcl.
+set_property STEPS.PLACE_DESIGN.TCL.PRE ${xilinx_root}/scripts/pre_place.tcl [get_runs impl_1]
 
 # K3/K4: extending ni_disable_i into i_cva6_icache (new dbg_ic_* probes placed
 # nearby) shifted placement enough to fail HOLD on a pre-existing, zero-logic
@@ -104,7 +124,21 @@ set_property strategy Performance_ExplorePostRoutePhysOpt [get_runs impl_1]
 # route_design, not post-route physopt. ExtraNetDelay_high biases PLACE_DESIGN
 # toward more conservative net delays, which tends to buy hold margin on short
 # paths without touching the setup-oriented impl_1 strategy above.
-set_property STEPS.PLACE_DESIGN.ARGS.DIRECTIVE ExtraNetDelay_high [get_runs impl_1]
+# set_property STEPS.PLACE_DESIGN.ARGS.DIRECTIVE ExtraNetDelay_high [get_runs impl_1]
+#
+# 2026-08-26: switched to `Explore`. ExtraNetDelay_high biases the placer toward
+# conservative net delays, i.e. it SPREADS logic out -- the wrong direction when
+# the problem is fitting 283,731 LUT cells into 274,080 sites. Its -0.021 ns hold
+# violation came from the K3/K4 probe-era placement, which no longer exists
+# (probes removed, 4 lanes, atomics removed -> a completely different placement).
+#
+# NOTE, honestly: hold slack is period-independent, so the +3.4 ns setup margin
+# at 50 MHz does NOT make a hold violation safe. The argument for dropping it is
+# that the placement it was tuned against is gone, and route_design does hold
+# fixing by default -- not that hold cannot recur. If WHS goes negative again,
+# the fix ladder is: revert this line first, then re-read the archived
+# routed.dcp vs postroute_physopt.dcp timing that this script already reports.
+set_property STEPS.PLACE_DESIGN.ARGS.DIRECTIVE Explore [get_runs impl_1]
 
 # K5 3c: the bitstream that actually passed timing was NOT produced by this
 # file -- it came from a standalone checkpoint script (k4_ckpt_route_test.tcl)

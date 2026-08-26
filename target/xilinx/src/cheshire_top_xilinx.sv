@@ -102,33 +102,75 @@ module cheshire_top_xilinx import cheshire_pkg::*; (
   ///////////////////////
 
   // Use default config as far as possible
+  // Target size of the LLC data array in BYTES. Held constant across AXI
+  // widths by deriving LlcNumLines from it below; change this, not NumLines.
+  // Set from the build command line, e.g.
+  //   make ara-chs-xilinx BOARD=zcu102 nr_lanes=4 vlen=2048 llc=1024
+  // (deps/ara/cheshire/Makefile turns `llc` into --define LLC_KIB). This is the
+  // TOTAL LLC RAM: cache ways and SPM ways share it, and the split between them
+  // is a runtime bitmask (cfg_spm at AmLlc+0x00), not a build-time choice.
+  localparam int unsigned LlcTargetBytes =
+      1024 * (`ifdef LLC_KIB `LLC_KIB `else 1024 `endif);
+
   function automatic cheshire_cfg_t gen_cheshire_xilinx_cfg();
     cheshire_cfg_t ret  = DefaultCfg;
     ret.RtcFreq         = 1000000;
     ret.SerialLink      = 0;
-    // Cut peripherals unused in the ZCU102 host-target setup to save LUTs.
-    // Their cheshire_soc output ports are internally tied off when disabled,
-    // and none have board pins on ZCU102, so this is safe. (~9.4k LUTs)
     ret.Vga             = 0;
     ret.SpiHost         = 0;
     ret.I2c             = 0;
     ret.BusErr          = 0;
     ret.Gpio            = 0;
-    // iDMA unused: apps (fc_layer/conv_layer/fmatmul) use RVV load/store +
-    // software memcpy, not the HW DMA; boot ROM (the other DMA user) is bypassed.
-    ret.Dma             = 0;
-    // --- LLC RE-ENABLED (bring-up: Ara 8x8+ deadlock fix) ---
-    // Bypassing the LLC exposed Ara's shallow, L2-SRAM-latency-sized store buffer
-    // directly to the PS-DDR/HP0 path, whose axi_iw_converter caps out at
-    // MaxUniqIds=8 / MaxTxns=24 (dram_wrapper_xilinx.sv). A streaming store burst
-    // (e.g. 8x8 = 512 stores) overruns that ceiling -> hard deadlock.
-    // With the LLC ON, hits are absorbed in 128 KiB of on-chip SRAM (no DDR txn),
-    // and writebacks to DDR are throttled to LlcMaxWriteTxns=16 (< 24) -> no wedge.
-    // Trade-off: CVA6 stores now sit in the LLC (write-back) until flushed, so the
-    // ARM must FLUSH the LLC before reading results/console via devmem
-    // (write the LLC flush cfg reg at AmLlc; see notes / run script).
-    // ret.LlcNotBypass = 0;   // old: bypass -> live DDR but Ara deadlock on bursts
+    // iDMA ENABLED for LLC-SPM latency hiding. Previously 0 because nothing
+    // used it (apps do RVV load/store + software memcpy; the boot ROM, the
+    // other DMA user, is bypassed -- FPGA apps link -nostartfiles with their
+    // own apps/common/crt0.S and are loaded by the ARM PS, so boot-ROM DMA is
+    // irrelevant here either way).
+    // Now needed: to overlap DDR<->SPM transfer with compute (double buffering)
+    // the mover must NOT be CVA6 (blocks the scalar core) or Ara's own LSU
+    // (occupies the very unit we are trying to keep busy). The DMA is an AXI
+    // crossbar master (axi_in_req[AxiIn.dma]) so it can address DDR
+    // (LlcOutRegionStart=0x4000_0000), SPM (0x1000_0000 cached / 0x1400_0000
+    // uncached) and peripherals alike -- DDR->SPM, SPM->DDR and SPM->SPM are
+    // all just descriptors. DmaConfEnableTwoD=1 gives strided/tiled copies.
+    ret.Dma             = 1;
     ret.LlcNotBypass    = 1;
+    // RISC-V atomics (AMO + LR/SC) on the four AXI slave shims. Verified 2026-08-26
+    // that nothing in this workload issues one: zero amo/lr/sc in the .text of
+    // vggnet16, fc_layer16only and conv_layer16only (which include crt0.S and the
+    // static libc), and zero in the 8 KiB bootrom. serial.c/printf.c use
+    //   __sync_synchronize(), which is a barrier -> `fence`, not an atomic.
+    // Disabling drops ~13.2k LUTs AND removes the LlcMaxReadTxns=16 in-flight read
+    // throttle on the SoC->LLC path. MUST stay paired with CVA6ConfigAExtEn=0 so a
+    // stray atomic traps instead of silently passing through as a normal access.
+    // Re-enable (atomics=1) for Linux or any multi-hart / locking software.
+    ret.AtomicsEnable   = `ifdef NO_ATOMICS 1'b0 `else 1'b1 `endif;
+    // SoC AXI 64 -> 128 bit. Ara's port is AraDataWideWidth = 32*NrLanes bits
+    // (= 4*NrLanes bytes/cycle, Ara's documented L2 bandwidth). At 2 lanes that
+    // is 64b and matches the SoC, so the Ara<->SoC converter degenerates away.
+    // At 4 lanes Ara wants 128b and a 64b SoC would DOWNSIZE it -- halving both
+    // DDR *and* SPM bandwidth (SPM is reached through the same crossbar), which
+    // would waste the extra lanes. 128b also matches the PS HP0 port
+    // (dram_wrapper_xilinx.sv cfg.DataWidth=128), so the 64->128 upsizer there
+    // hits axi_dw_converter's gen_no_dw_conversion branch and disappears
+    // (~18.7k LUTs at MaxReads=24), partly paying for the wider crossbar.
+    // NB: gen_cva6_cfg does ret.AxiDataWidth = cfg.AxiDataWidth, so CVA6's AXI
+    // widens too (DcacheLineWidth=256 -> 2 beats; no assertion constrains it).
+    // DEFERRED -- do not re-enable without doing the full port first.
+    // 128b breaks RTL elaboration: dm_csrs.sv:172 declares
+    // `logic [63:0] sbdata_q` but line 191 does sbdata_q[BusWidth-1:0], and
+    // cheshire_soc.sv:1049 passes BusWidth = Cfg.AxiDataWidth -> [127:0] out of
+    // range. riscv-dbg's system-bus access is hard-limited to 64 bit (its DMI
+    // only exposes sbdata0/sbdata1 = 2x32). Fixing it needs BusWidth(64), the
+    // dbg_sba_* signals re-typed off axi_data_t, axi_from_mem re-parameterised
+    // to 64b, and a 64->128 converter into the xbar -- i.e. surgery on the JTAG
+    // debug path. And dm_top is only the FIRST of 18 sites inheriting
+    // Cfg.AxiDataWidth (LLC, atomics, regbus, USB, slink, DMA, VGA, ...), each
+    // with its own possible width limits.
+    // The SPM/cache split itself is NOT fixed here -- cfg_spm at AmLlc+0x00 is
+    // a runtime way-mask, so 0xFF (all SPM) vs 0x3F (6 SPM + 2 cache ways as
+    // L2 for CVA6's 4 KiB L1I / 8 KiB L1D) can be compared on this same
+    // bitstream without a rebuild.
   `ifdef USE_USB
     ret.Usb = 1;
   `else
@@ -139,18 +181,39 @@ module cheshire_top_xilinx import cheshire_pkg::*; (
     ret.AraVLEN = `ifdef VLEN `VLEN `else 0 `endif;
     ret.AraNrLanes = `ifdef NR_LANES `NR_LANES `else 0 `endif;
   `endif
+
+    ///////////////////////////////////////////////////////////////////////
+    // Lane-parametric SoC AXI width + LLC geometry. KEEP THIS ORDERING:  //
+    // AxiDataWidth must be set AFTER AraNrLanes and BEFORE LlcNumLines.  //
+    ///////////////////////////////////////////////////////////////////////
+
+    // Ara's memory port is AraDataWideWidth = 32*NrLanes bits (= 4*NrLanes
+    // bytes/cycle, its documented L2 bandwidth). A narrower SoC AXI makes
+    // cheshire_soc.sv insert a downsizer that throttles Ara to the SoC width --
+    // and since SPM lives behind the same crossbar, that halves SPM bandwidth
+    // too, not just DDR. Deriving the width from the lane count keeps them
+    // matched at every configuration and makes the converters disappear:
+    // axi_dw_converter has a gen_no_dw_conversion branch for equal widths, so
+    // no `ifdef`/lane test is needed anywhere -- the hardware self-eliminates.
+    //   2 lanes ->  64b : Ara converter absent (already the case today)
+    //   4 lanes -> 128b : Ara converter absent AND the DRAM upsizer disappears
+    //                     (PS HP0 is 128b -> equal widths), ~20.6k LUTs freed
+    //   8 lanes -> 256b : NB the DRAM side then becomes a 256->128 *downsizer*;
+    //                     HP0 is the bandwidth wall from there on.
+    // Floor of 64 covers CVA6/peripherals and the Ara-disabled case (lanes=0).
+    ret.AxiDataWidth = (32*ret.AraNrLanes > 64) ? 32*ret.AraNrLanes : 64;
+
+    // LLC RAM sized in BYTES, independent of AXI width. Blocks are
+    // AxiDataWidth/8 bytes wide, so NumLines must scale inversely or the SPM
+    // silently doubles when the bus widens:
+    //   SizeSpm = SetAssoc * NumLines * NumBlocks * AxiDataWidth/8
+    // 1 MiB gives 2048 lines @64b, 1024 @128b, 512 @256b.
+    // NumLines is the right knob: NumBlocks would inflate the cache line
+    // (worse refills), SetAssoc would inflate tag-comparator area. Cost is
+    // BRAM, not LUTs (~320 RAMB36 for 1 MiB), and BRAM is what we have spare.
+    ret.LlcNumLines = LlcTargetBytes /
+                      (ret.LlcSetAssoc * ret.LlcNumBlocks * (ret.AxiDataWidth/8));
   `ifdef TARGET_ZCU102
-    // K5 3a: this function is shared by every Xilinx target (zcu102, vcu128,
-    // genesys2 all compile this same cheshire_top_xilinx.sv), so the field
-    // default (cheshire_pkg.sv: DefaultCfg.Cva6NiDramRule=1) is left alone
-    // above and only overridden here, under the same `ifdef TARGET_ZCU102
-    // idiom already used elsewhere in this tree (phy_definitions.svh,
-    // dram_wrapper_xilinx.sv). An earlier, unguarded version of this
-    // override would have silently changed vcu128/genesys2 behavior too.
-    // Safe only because .text is loaded into DRAM ([0x4000_0000,0x8000_0000))
-    // on zcu102 specifically and no zcu102 peripheral lives in that range;
-    // an instance that attaches real non-idempotent I/O there must not set
-    // this.
     ret.Cva6NiDramRule = 0;
   `endif
     return ret;

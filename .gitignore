@@ -82,3 +82,4 @@ target/xilinx/ckpt/
 *.bit
 *.bin
 
+_scratch/

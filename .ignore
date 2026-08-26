@@ -1,0 +1,4 @@
+deps/
+target/xilinx/build/
+target/xilinx/ckpt/
+target/xilinx/out/

@@ -113,6 +113,13 @@ package cheshire_pkg;
     dw_bt   AxiUserErrBits;
     dw_bt   AxiUserErrLsb;
     doub_bt AxiUserDefault; // Default user assignment, adjusted by user features (AMO)
+    // RISC-V atomics (AMO + LR/SC) support on the AXI slave shims.
+    // When 0, all four axi_riscv_atomics_structs shims (reg, LLC, dbg, DMA conf)
+    // are replaced by straight-through wires. Non-atomic traffic is unaffected --
+    // the shims are transparent to it -- but AMO/LR/SC then silently do the wrong
+    // thing, so this must be paired with CVA6ConfigAExtEn=0 so they trap instead.
+    // Also removes the LlcMaxReadTxns-deep in-flight throttle on the LLC read path.
+    bit     AtomicsEnable;
     // Reg parameters
     dw_bt   RegMaxReadTxns;
     dw_bt   RegMaxWriteTxns;
@@ -588,6 +595,7 @@ package cheshire_pkg;
     AxiUserErrBits    : 0,
     AxiUserErrLsb     : 0,
     AxiUserDefault    : 0,
+    AtomicsEnable     : 1,
     RegMaxReadTxns    : 8,
     RegMaxWriteTxns   : 8,
     RegAmoNumCuts     : 1,

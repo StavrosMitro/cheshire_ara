@@ -54,6 +54,7 @@ module dram_wrapper_xilinx #(
     integer StrobeWidth;
     integer MaxUniqIds;
     integer MaxTxns;
+    integer MaxReads;
   } dram_cfg_t;
 
 `ifdef TARGET_VCU128
@@ -65,7 +66,8 @@ module dram_wrapper_xilinx #(
     DataWidth     : 512,
     StrobeWidth   : 64,
     MaxUniqIds    : 8,    // TODO: suboptimal, but limited by CVA6/LLC
-    MaxTxns       : 24    // TODO: suboptimal, but limited by CVA6/LLC
+    MaxTxns       : 24,   // TODO: suboptimal, but limited by CVA6/LLC
+    MaxReads      : 24    // unchanged from MaxTxns: preserve existing behaviour
   };
 `endif
 
@@ -78,7 +80,8 @@ module dram_wrapper_xilinx #(
     DataWidth     : 64,
     StrobeWidth   : 8,
     MaxUniqIds    : 8,    // TODO: suboptimal, but limited by CVA6/LLC
-    MaxTxns       : 24    // TODO: suboptimal, but limited by CVA6/LLC
+    MaxTxns       : 24,   // TODO: suboptimal, but limited by CVA6/LLC
+    MaxReads      : 24    // unchanged from MaxTxns: preserve existing behaviour
   };
 `endif
 
@@ -99,7 +102,23 @@ module dram_wrapper_xilinx #(
     DataWidth     : 128,  // data width PS HP0 port
     StrobeWidth   : 16,   // 128 / 8 = 16
     MaxUniqIds    : 32,
-    MaxTxns       : 48
+    MaxTxns       : 48,   // total txns (reads+writes) -> axi_iw_converter; unchanged
+    // Outstanding READS only -> axi_dw_converter.AxiMaxReads, which replicates
+    // R/AR registers, arbiters, comparators and upsizer FSMs *linearly* (38k
+    // LUTs at 48 = ~14% of the device). Writes do NOT consume these: the W path
+    // is a single FSM (w_state_q), since AXI requires W in AW order -- there is
+    // no AxiMaxWrites parameter at all.
+    // Ceiling = AxiMaxSlvTrans/AxiMaxMstTrans = 24 (crossbar); nothing can put
+    // more than 24 reads into this path. NB: Cfg.LlcMaxReadTxns=16 is NOT a
+    // bound here -- it parameterises i_llc_atomics (the atomics shim in front
+    // of the LLC, cheshire_soc.sv:458), not the LLC master port.
+    // 24 also matches VCU128/Genesys2 and is the ceiling the LLC deadlock fix
+    // was validated against. Kept separate from MaxTxns so the deadlock-
+    // sensitive iw_converter (which counts reads+writes) retains its value.
+    // CAUTION: if LlcNotBypass ever goes to 0 (LLC bypassed), traffic reaches
+    // this port straight from the crossbar with no LLC coalescing -- revisit
+    // this and the iw_converter limits together before doing that.
+    MaxReads      : 24
   };
 `endif
 
@@ -143,7 +162,7 @@ module dram_wrapper_xilinx #(
   ////////////////////
 
   axi_dw_converter #(
-    .AxiMaxReads          ( cfg.MaxTxns   ),
+    .AxiMaxReads          ( cfg.MaxReads  ),
     .AxiSlvPortDataWidth  ( SocDataWidth  ),
     .AxiMstPortDataWidth  ( cfg.DataWidth ),
     .AxiAddrWidth         ( SocAddrWidth  ),

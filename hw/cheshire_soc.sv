@@ -324,28 +324,34 @@ module cheshire_soc import cheshire_pkg::*; #(
 
   // Shim atomics, which are not supported in reg
   // TODO: should we use a filter instead here?
-  axi_riscv_atomics_structs #(
-    .AxiAddrWidth     ( Cfg.AddrWidth    ),
-    .AxiDataWidth     ( Cfg.AxiDataWidth ),
-    .AxiIdWidth       ( AxiSlvIdWidth    ),
-    .AxiUserWidth     ( Cfg.AxiUserWidth ),
-    .AxiMaxReadTxns   ( Cfg.RegMaxReadTxns  ),
-    .AxiMaxWriteTxns  ( Cfg.RegMaxWriteTxns ),
-    .AxiUserAsId      ( 1 ),
-    .AxiUserIdMsb     ( Cfg.AxiUserAmoMsb ),
-    .AxiUserIdLsb     ( Cfg.AxiUserAmoLsb ),
-    .RiscvWordWidth   ( 64 ),
-    .NAxiCuts         ( Cfg.RegAmoNumCuts ),
-    .axi_req_t        ( axi_slv_req_t ),
-    .axi_rsp_t        ( axi_slv_rsp_t )
-  ) i_reg_atomics (
-    .clk_i,
-    .rst_ni,
-    .axi_slv_req_i ( axi_out_req[AxiOut.reg_demux] ),
-    .axi_slv_rsp_o ( axi_out_rsp[AxiOut.reg_demux] ),
-    .axi_mst_req_o ( axi_reg_amo_req ),
-    .axi_mst_rsp_i ( axi_reg_amo_rsp )
-  );
+  if (Cfg.AtomicsEnable) begin : gen_reg_atomics
+    axi_riscv_atomics_structs #(
+      .AxiAddrWidth     ( Cfg.AddrWidth    ),
+      .AxiDataWidth     ( Cfg.AxiDataWidth ),
+      .AxiIdWidth       ( AxiSlvIdWidth    ),
+      .AxiUserWidth     ( Cfg.AxiUserWidth ),
+      .AxiMaxReadTxns   ( Cfg.RegMaxReadTxns  ),
+      .AxiMaxWriteTxns  ( Cfg.RegMaxWriteTxns ),
+      .AxiUserAsId      ( 1 ),
+      .AxiUserIdMsb     ( Cfg.AxiUserAmoMsb ),
+      .AxiUserIdLsb     ( Cfg.AxiUserAmoLsb ),
+      .RiscvWordWidth   ( 64 ),
+      .NAxiCuts         ( Cfg.RegAmoNumCuts ),
+      .axi_req_t        ( axi_slv_req_t ),
+      .axi_rsp_t        ( axi_slv_rsp_t )
+    ) i_reg_atomics (
+      .clk_i,
+      .rst_ni,
+      .axi_slv_req_i ( axi_out_req[AxiOut.reg_demux] ),
+      .axi_slv_rsp_o ( axi_out_rsp[AxiOut.reg_demux] ),
+      .axi_mst_req_o ( axi_reg_amo_req ),
+      .axi_mst_rsp_i ( axi_reg_amo_rsp )
+    );
+  end else begin : gen_no_reg_atomics
+    // Straight-through: the shim is transparent to non-atomic traffic.
+    assign axi_reg_amo_req                = axi_out_req[AxiOut.reg_demux];
+    assign axi_out_rsp[AxiOut.reg_demux]  = axi_reg_amo_rsp;
+  end
 
   axi_cut #(
     .Bypass     ( ~Cfg.RegAmoPostCut ),
@@ -450,28 +456,36 @@ module cheshire_soc import cheshire_pkg::*; #(
 
     // Shim atomics, which are not supported by LLC
     // TODO: This should be a filter, but how do we filter RISC-V atomics?
-    axi_riscv_atomics_structs #(
-      .AxiAddrWidth     ( Cfg.AddrWidth    ),
-      .AxiDataWidth     ( Cfg.AxiDataWidth ),
-      .AxiIdWidth       ( AxiSlvIdWidth    ),
-      .AxiUserWidth     ( Cfg.AxiUserWidth ),
-      .AxiMaxReadTxns   ( Cfg.LlcMaxReadTxns  ),
-      .AxiMaxWriteTxns  ( Cfg.LlcMaxWriteTxns ),
-      .AxiUserAsId      ( 1 ),
-      .AxiUserIdMsb     ( Cfg.AxiUserAmoMsb ),
-      .AxiUserIdLsb     ( Cfg.AxiUserAmoLsb ),
-      .RiscvWordWidth   ( 64 ),
-      .NAxiCuts         ( Cfg.LlcAmoNumCuts ),
-      .axi_req_t        ( axi_slv_req_t ),
-      .axi_rsp_t        ( axi_slv_rsp_t )
-    ) i_llc_atomics (
-      .clk_i,
-      .rst_ni,
-      .axi_slv_req_i ( axi_out_req[AxiOut.llc] ),
-      .axi_slv_rsp_o ( axi_out_rsp[AxiOut.llc] ),
-      .axi_mst_req_o ( axi_llc_amo_req ),
-      .axi_mst_rsp_i ( axi_llc_amo_rsp )
-    );
+    if (Cfg.AtomicsEnable) begin : gen_llc_amo
+      axi_riscv_atomics_structs #(
+        .AxiAddrWidth     ( Cfg.AddrWidth    ),
+        .AxiDataWidth     ( Cfg.AxiDataWidth ),
+        .AxiIdWidth       ( AxiSlvIdWidth    ),
+        .AxiUserWidth     ( Cfg.AxiUserWidth ),
+        .AxiMaxReadTxns   ( Cfg.LlcMaxReadTxns  ),
+        .AxiMaxWriteTxns  ( Cfg.LlcMaxWriteTxns ),
+        .AxiUserAsId      ( 1 ),
+        .AxiUserIdMsb     ( Cfg.AxiUserAmoMsb ),
+        .AxiUserIdLsb     ( Cfg.AxiUserAmoLsb ),
+        .RiscvWordWidth   ( 64 ),
+        .NAxiCuts         ( Cfg.LlcAmoNumCuts ),
+        .axi_req_t        ( axi_slv_req_t ),
+        .axi_rsp_t        ( axi_slv_rsp_t )
+      ) i_llc_atomics (
+        .clk_i,
+        .rst_ni,
+        .axi_slv_req_i ( axi_out_req[AxiOut.llc] ),
+        .axi_slv_rsp_o ( axi_out_rsp[AxiOut.llc] ),
+        .axi_mst_req_o ( axi_llc_amo_req ),
+        .axi_mst_rsp_i ( axi_llc_amo_rsp )
+      );
+    end else begin : gen_no_llc_amo
+      // Straight-through. NOTE: this also removes the LlcMaxReadTxns-deep
+      // in-flight read queue, which was the tightest outstanding-read limit
+      // on the SoC->LLC path (16, vs 24 at the DRAM dw_converter).
+      assign axi_llc_amo_req          = axi_out_req[AxiOut.llc];
+      assign axi_out_rsp[AxiOut.llc]  = axi_llc_amo_rsp;
+    end
 
     axi_cut #(
       .Bypass     ( ~Cfg.LlcAmoPostCut ),
@@ -809,6 +823,17 @@ module cheshire_soc import cheshire_pkg::*; #(
         .NrLanes      ( Cfg.AraNrLanes         ),
         .VLEN         ( Cfg.AraVLEN            ),
         .OSSupport    ( 1'b1                   ),
+        // fp16_v3: Ara's VECTOR FPU is FP16-only. Note this is independent of
+        // CVA6's scalar FPU, which keeps RVF=1 (FP32) + XF16=1 in
+        // cva6_patched/core/include/cv64a6_imafdcv_sv39_config_pkg.sv: LLVM's
+        // RISC-V ISA dependency graph requires *scalar* F to enable Zvfh
+        // (vector fp16), and the scattered scalar float in the apps
+        // (data.c/metrics/softmax) still needs it. Ara itself never needs FP32:
+        // vggnet16/conv_layer16only/fc_layer16only were verified to emit only
+        // e16 vector ops, and ara_dispatcher.sv under FPUSupportHalf rejects
+        // any vsew != EW16 -- so an accidental FP32 vector op traps cleanly
+        // rather than silently mis-executing.
+        .FPUSupport   ( ara_pkg::FPUSupportHalf ),
         .CVA6Cfg      ( Cva6Cfg                ),
         .exception_t  ( exception_t            ),
         .accelerator_req_t (accelerator_req_t ),
@@ -913,25 +938,43 @@ module cheshire_soc import cheshire_pkg::*; #(
   logic          [NumDbgHarts-1:0] dbg_unavail;
   logic          [NumDbgHarts-1:0] dbg_req;
 
+  // riscv-dbg's system bus access is spec-limited to 64 bit: the RISC-V debug
+  // spec defines sbdata as 32-bit register pairs (sbdata0/sbdata1), so
+  // dm_csrs.sv declares `logic [63:0] sbdata_q` unconditionally and then does
+  // sbdata_q[BusWidth-1:0]. Passing Cfg.AxiDataWidth > 64 there is an
+  // out-of-range part-select and fails RTL elaboration. So the whole debug
+  // subsystem runs at its own width and is bridged to the SoC width by the two
+  // axi_dw_converters below -- which cost nothing while the widths are equal
+  // (axi_dw_converter has a gen_no_dw_conversion branch), so this is free at
+  // 2 lanes / 64b and only materialises when the SoC bus is wider.
+  localparam int unsigned DbgBusWidth = (Cfg.AxiDataWidth < 64) ? Cfg.AxiDataWidth : 64;
+
+  typedef logic [DbgBusWidth-1:0]   dbg_data_t;
+  typedef logic [DbgBusWidth/8-1:0] dbg_strb_t;
+  // CHESHIRE_TYPEDEF_AXI_CT (not AXI_TYPEDEF_ALL) so the response type is
+  // named *_rsp_t, matching every other AXI type in this file.
+  `CHESHIRE_TYPEDEF_AXI_CT(axi_dbg,     addr_t, axi_slv_id_t, dbg_data_t, dbg_strb_t, axi_user_t)
+  `CHESHIRE_TYPEDEF_AXI_CT(axi_dbg_mst, addr_t, axi_mst_id_t, dbg_data_t, dbg_strb_t, axi_user_t)
+
   // Debug module slave interface
   logic       dbg_slv_req;
   addr_t      dbg_slv_addr;
-  axi_data_t  dbg_slv_addr_long;
+  dbg_data_t  dbg_slv_addr_long;
   logic       dbg_slv_we;
-  axi_data_t  dbg_slv_wdata;
-  axi_strb_t  dbg_slv_wstrb;
-  axi_data_t  dbg_slv_rdata;
+  dbg_data_t  dbg_slv_wdata;
+  dbg_strb_t  dbg_slv_wstrb;
+  dbg_data_t  dbg_slv_rdata;
   logic       dbg_slv_rvalid;
 
   // Debug module system bus access interface
   logic       dbg_sba_req;
   addr_t      dbg_sba_addr;
-  axi_data_t  dbg_sba_addr_long;
+  dbg_data_t  dbg_sba_addr_long;
   logic       dbg_sba_we;
-  axi_data_t  dbg_sba_wdata;
-  axi_strb_t  dbg_sba_strb;
+  dbg_data_t  dbg_sba_wdata;
+  dbg_strb_t  dbg_sba_strb;
   logic       dbg_sba_gnt;
-  axi_data_t  dbg_sba_rdata;
+  dbg_data_t  dbg_sba_rdata;
   logic       dbg_sba_rvalid;
   logic       dbg_sba_err;
 
@@ -961,28 +1004,33 @@ module cheshire_soc import cheshire_pkg::*; #(
   end
 
   // Filter atomic accesses
-  axi_riscv_atomics_structs #(
-    .AxiAddrWidth     ( Cfg.AddrWidth    ),
-    .AxiDataWidth     ( Cfg.AxiDataWidth ),
-    .AxiIdWidth       ( AxiSlvIdWidth    ),
-    .AxiUserWidth     ( Cfg.AxiUserWidth ),
-    .AxiMaxReadTxns   ( Cfg.DbgMaxReadTxns  ),
-    .AxiMaxWriteTxns  ( Cfg.DbgMaxWriteTxns ),
-    .AxiUserAsId      ( 1 ),
-    .AxiUserIdMsb     ( Cfg.AxiUserAmoMsb ),
-    .AxiUserIdLsb     ( Cfg.AxiUserAmoLsb ),
-    .RiscvWordWidth   ( 64 ),
-    .NAxiCuts         ( Cfg.DbgAmoNumCuts ),
-    .axi_req_t        ( axi_slv_req_t ),
-    .axi_rsp_t        ( axi_slv_rsp_t )
-  ) i_dbg_slv_axi_atomics (
-    .clk_i,
-    .rst_ni,
-    .axi_slv_req_i ( axi_out_req[AxiOut.dbg] ),
-    .axi_slv_rsp_o ( axi_out_rsp[AxiOut.dbg] ),
-    .axi_mst_req_o ( dbg_slv_axi_amo_req ),
-    .axi_mst_rsp_i ( dbg_slv_axi_amo_rsp )
-  );
+  if (Cfg.AtomicsEnable) begin : gen_dbg_slv_atomics
+    axi_riscv_atomics_structs #(
+      .AxiAddrWidth     ( Cfg.AddrWidth    ),
+      .AxiDataWidth     ( Cfg.AxiDataWidth ),
+      .AxiIdWidth       ( AxiSlvIdWidth    ),
+      .AxiUserWidth     ( Cfg.AxiUserWidth ),
+      .AxiMaxReadTxns   ( Cfg.DbgMaxReadTxns  ),
+      .AxiMaxWriteTxns  ( Cfg.DbgMaxWriteTxns ),
+      .AxiUserAsId      ( 1 ),
+      .AxiUserIdMsb     ( Cfg.AxiUserAmoMsb ),
+      .AxiUserIdLsb     ( Cfg.AxiUserAmoLsb ),
+      .RiscvWordWidth   ( 64 ),
+      .NAxiCuts         ( Cfg.DbgAmoNumCuts ),
+      .axi_req_t        ( axi_slv_req_t ),
+      .axi_rsp_t        ( axi_slv_rsp_t )
+    ) i_dbg_slv_axi_atomics (
+      .clk_i,
+      .rst_ni,
+      .axi_slv_req_i ( axi_out_req[AxiOut.dbg] ),
+      .axi_slv_rsp_o ( axi_out_rsp[AxiOut.dbg] ),
+      .axi_mst_req_o ( dbg_slv_axi_amo_req ),
+      .axi_mst_rsp_i ( dbg_slv_axi_amo_rsp )
+    );
+  end else begin : gen_no_dbg_slv_atomics
+    assign dbg_slv_axi_amo_req      = axi_out_req[AxiOut.dbg];
+    assign axi_out_rsp[AxiOut.dbg]  = dbg_slv_axi_amo_rsp;
+  end
 
   axi_cut #(
     .Bypass     ( ~Cfg.DbgAmoPostCut ),
@@ -1002,12 +1050,80 @@ module cheshire_soc import cheshire_pkg::*; #(
     .mst_resp_i ( dbg_slv_axi_cut_rsp )
   );
 
+  // Narrow the SoC bus down to the debug module's width. Degenerates to plain
+  // wires (gen_no_dw_conversion) whenever Cfg.AxiDataWidth == DbgBusWidth,
+  // i.e. at every configuration where the SoC bus is 64 bit.
+  axi_dbg_req_t dbg_slv_axi_dw_req;
+  axi_dbg_rsp_t dbg_slv_axi_dw_rsp;
+
+  axi_dw_converter #(
+    .AxiMaxReads         ( Cfg.DbgMaxReqs    ),
+    .AxiSlvPortDataWidth ( Cfg.AxiDataWidth  ),
+    .AxiMstPortDataWidth ( DbgBusWidth       ),
+    .AxiAddrWidth        ( Cfg.AddrWidth     ),
+    .AxiIdWidth          ( AxiSlvIdWidth     ),
+    .aw_chan_t           ( axi_slv_aw_chan_t ),
+    .b_chan_t            ( axi_slv_b_chan_t  ),
+    .ar_chan_t           ( axi_slv_ar_chan_t ),
+    .mst_w_chan_t        ( axi_dbg_w_chan_t  ),
+    .mst_r_chan_t        ( axi_dbg_r_chan_t  ),
+    .axi_mst_req_t       ( axi_dbg_req_t     ),
+    .axi_mst_resp_t      ( axi_dbg_rsp_t     ),
+    .slv_w_chan_t        ( axi_slv_w_chan_t  ),
+    .slv_r_chan_t        ( axi_slv_r_chan_t  ),
+    .axi_slv_req_t       ( axi_slv_req_t     ),
+    .axi_slv_resp_t      ( axi_slv_rsp_t     )
+  ) i_dbg_slv_axi_dw_conv (
+    .clk_i,
+    .rst_ni,
+    .slv_req_i  ( dbg_slv_axi_cut_req ),
+    .slv_resp_o ( dbg_slv_axi_cut_rsp ),
+    .mst_req_o  ( dbg_slv_axi_dw_req  ),
+    .mst_resp_i ( dbg_slv_axi_dw_rsp  )
+  );
+
+  // COMBINATIONAL LOOP BREAKER -- do not remove without re-reading this.
+  // axi_to_mem_interleaved below ties .mem_gnt_i directly to .mem_req_o (grant
+  // follows request in the same cycle), so its AXI ready path is combinational
+  // end to end. The dw_converter above is combinational on all handshake paths
+  // too. Chaining them closes a real loop: Vivado DRC LUTLP-1 flagged 16 LUT
+  // cells spanning i_dbg_slv_axi_dw_conv and i_dbg_slv_axi_to_mem, and
+  // write_bitstream refused to run (2026-08-26 build, after route + timing had
+  // both PASSED -- WNS +1.785, WHS +0.010, 0 routing errors).
+  //
+  // Before the dw_converter was inserted, i_dbg_slv_axi_atomics_cut fed
+  // axi_to_mem directly and its register slice broke the loop. This restores
+  // that slice on the narrow (DbgBusWidth) side of the converter.
+  //
+  // Do NOT "fix" this with ALLOW_COMBINATORIAL_LOOPS: the loop is structural,
+  // not a false path, and silencing the DRC leaves a real race in hardware.
+  axi_dbg_req_t dbg_slv_axi_dwcut_req;
+  axi_dbg_rsp_t dbg_slv_axi_dwcut_rsp;
+
+  axi_cut #(
+    .Bypass     ( 1'b0 ),
+    .aw_chan_t  ( axi_dbg_aw_chan_t ),
+    .w_chan_t   ( axi_dbg_w_chan_t  ),
+    .b_chan_t   ( axi_dbg_b_chan_t  ),
+    .ar_chan_t  ( axi_dbg_ar_chan_t ),
+    .r_chan_t   ( axi_dbg_r_chan_t  ),
+    .axi_req_t  ( axi_dbg_req_t ),
+    .axi_resp_t ( axi_dbg_rsp_t )
+  ) i_dbg_slv_axi_dw_cut (
+    .clk_i,
+    .rst_ni,
+    .slv_req_i  ( dbg_slv_axi_dw_req    ),
+    .slv_resp_o ( dbg_slv_axi_dw_rsp    ),
+    .mst_req_o  ( dbg_slv_axi_dwcut_req ),
+    .mst_resp_i ( dbg_slv_axi_dwcut_rsp )
+  );
+
   // AXI access to debug module
   axi_to_mem_interleaved #(
-    .axi_req_t  ( axi_slv_req_t ),
-    .axi_resp_t ( axi_slv_rsp_t ),
+    .axi_req_t  ( axi_dbg_req_t ),
+    .axi_resp_t ( axi_dbg_rsp_t ),
     .AddrWidth  ( Cfg.AddrWidth    ),
-    .DataWidth  ( Cfg.AxiDataWidth ),
+    .DataWidth  ( DbgBusWidth      ),
     .IdWidth    ( AxiSlvIdWidth    ),
     .NumBanks   ( 1 ),
     .BufDepth   ( 4 )
@@ -1016,8 +1132,8 @@ module cheshire_soc import cheshire_pkg::*; #(
     .rst_ni,
     .test_i       ( test_mode_i ),
     .busy_o       ( ),
-    .axi_req_i    ( dbg_slv_axi_cut_req ),
-    .axi_resp_o   ( dbg_slv_axi_cut_rsp ),
+    .axi_req_i    ( dbg_slv_axi_dwcut_req ),
+    .axi_resp_o   ( dbg_slv_axi_dwcut_rsp ),
     .mem_req_o    ( dbg_slv_req    ),
     .mem_gnt_i    ( dbg_slv_req    ),
     .mem_addr_o   ( dbg_slv_addr   ),
@@ -1035,7 +1151,7 @@ module cheshire_soc import cheshire_pkg::*; #(
   // Debug Module
   dm_top #(
     .NrHarts        ( NumDbgHarts ),
-    .BusWidth       ( Cfg.AxiDataWidth ),
+    .BusWidth       ( DbgBusWidth ),
     .DmBaseAddress  ( AmDbg )
   ) i_dbg_dm_top (
     .clk_i,
@@ -1080,15 +1196,20 @@ module cheshire_soc import cheshire_pkg::*; #(
     axi_in_req[AxiIn.dbg].ar.user = Cfg.AxiUserDefault;
   end
 
-  // Debug module system bus access to AXI crossbar
+  // Debug module system bus access to AXI crossbar. Built at the debug
+  // module's own width, then widened to the SoC bus by the converter below
+  // (free wires while the two widths are equal).
+  axi_dbg_mst_req_t dbg_sba_axi_narrow_req;
+  axi_dbg_mst_rsp_t dbg_sba_axi_narrow_rsp;
+
   axi_from_mem #(
     .MemAddrWidth ( Cfg.AddrWidth    ),
     .AxiAddrWidth ( Cfg.AddrWidth    ),
-    .DataWidth    ( Cfg.AxiDataWidth ),
+    .DataWidth    ( DbgBusWidth      ),
     .MaxRequests  ( Cfg.DbgMaxReqs ),
     .AxiProt      ( '0 ),
-    .axi_req_t    ( axi_mst_req_t ),
-    .axi_rsp_t    ( axi_mst_rsp_t )
+    .axi_req_t    ( axi_dbg_mst_req_t ),
+    .axi_rsp_t    ( axi_dbg_mst_rsp_t )
   ) i_dbg_sba_axi_from_mem (
     .clk_i,
     .rst_ni,
@@ -1103,8 +1224,36 @@ module cheshire_soc import cheshire_pkg::*; #(
     .mem_rsp_error_o ( dbg_sba_err    ),
     .slv_aw_cache_i  ( axi_pkg::CACHE_MODIFIABLE ),
     .slv_ar_cache_i  ( axi_pkg::CACHE_MODIFIABLE ),
-    .axi_req_o       ( axi_dbg_req           ),
-    .axi_rsp_i       ( axi_in_rsp[AxiIn.dbg] )
+    .axi_req_o       ( dbg_sba_axi_narrow_req ),
+    .axi_rsp_i       ( dbg_sba_axi_narrow_rsp )
+  );
+
+  // Widen the debug module's SBA master back up to the SoC bus width.
+  // gen_no_dw_conversion (= wires) whenever DbgBusWidth == Cfg.AxiDataWidth.
+  axi_dw_converter #(
+    .AxiMaxReads         ( Cfg.DbgMaxReqs        ),
+    .AxiSlvPortDataWidth ( DbgBusWidth           ),
+    .AxiMstPortDataWidth ( Cfg.AxiDataWidth      ),
+    .AxiAddrWidth        ( Cfg.AddrWidth         ),
+    .AxiIdWidth          ( Cfg.AxiMstIdWidth     ),
+    .aw_chan_t           ( axi_dbg_mst_aw_chan_t ),
+    .b_chan_t            ( axi_dbg_mst_b_chan_t  ),
+    .ar_chan_t           ( axi_dbg_mst_ar_chan_t ),
+    .mst_w_chan_t        ( axi_mst_w_chan_t      ),
+    .mst_r_chan_t        ( axi_mst_r_chan_t      ),
+    .axi_mst_req_t       ( axi_mst_req_t         ),
+    .axi_mst_resp_t      ( axi_mst_rsp_t         ),
+    .slv_w_chan_t        ( axi_dbg_mst_w_chan_t  ),
+    .slv_r_chan_t        ( axi_dbg_mst_r_chan_t  ),
+    .axi_slv_req_t       ( axi_dbg_mst_req_t     ),
+    .axi_slv_resp_t      ( axi_dbg_mst_rsp_t     )
+  ) i_dbg_sba_axi_dw_conv (
+    .clk_i,
+    .rst_ni,
+    .slv_req_i  ( dbg_sba_axi_narrow_req ),
+    .slv_resp_o ( dbg_sba_axi_narrow_rsp ),
+    .mst_req_o  ( axi_dbg_req            ),
+    .mst_resp_i ( axi_in_rsp[AxiIn.dbg]  )
   );
 
   // Debug Transfer Module and JTAG interface
@@ -1521,28 +1670,33 @@ module cheshire_soc import cheshire_pkg::*; #(
     axi_slv_req_t dma_amo_req, dma_cut_req;
     axi_slv_rsp_t dma_amo_rsp, dma_cut_rsp;
 
-    axi_riscv_atomics_structs #(
-      .AxiAddrWidth     ( Cfg.AddrWidth    ),
-      .AxiDataWidth     ( Cfg.AxiDataWidth ),
-      .AxiIdWidth       ( AxiSlvIdWidth    ),
-      .AxiUserWidth     ( Cfg.AxiUserWidth ),
-      .AxiMaxReadTxns   ( Cfg.DmaConfMaxReadTxns  ),
-      .AxiMaxWriteTxns  ( Cfg.DmaConfMaxWriteTxns ),
-      .AxiUserAsId      ( 1 ),
-      .AxiUserIdMsb     ( Cfg.AxiUserAmoMsb ),
-      .AxiUserIdLsb     ( Cfg.AxiUserAmoLsb ),
-      .RiscvWordWidth   ( 64 ),
-      .NAxiCuts         ( Cfg.DmaConfAmoNumCuts ),
-      .axi_req_t        ( axi_slv_req_t ),
-      .axi_rsp_t        ( axi_slv_rsp_t )
-    ) i_dma_conf_atomics (
-      .clk_i,
-      .rst_ni,
-      .axi_slv_req_i ( axi_out_req[AxiOut.dma] ),
-      .axi_slv_rsp_o ( axi_out_rsp[AxiOut.dma] ),
-      .axi_mst_req_o ( dma_amo_req ),
-      .axi_mst_rsp_i ( dma_amo_rsp )
-    );
+    if (Cfg.AtomicsEnable) begin : gen_dma_conf_atomics
+      axi_riscv_atomics_structs #(
+        .AxiAddrWidth     ( Cfg.AddrWidth    ),
+        .AxiDataWidth     ( Cfg.AxiDataWidth ),
+        .AxiIdWidth       ( AxiSlvIdWidth    ),
+        .AxiUserWidth     ( Cfg.AxiUserWidth ),
+        .AxiMaxReadTxns   ( Cfg.DmaConfMaxReadTxns  ),
+        .AxiMaxWriteTxns  ( Cfg.DmaConfMaxWriteTxns ),
+        .AxiUserAsId      ( 1 ),
+        .AxiUserIdMsb     ( Cfg.AxiUserAmoMsb ),
+        .AxiUserIdLsb     ( Cfg.AxiUserAmoLsb ),
+        .RiscvWordWidth   ( 64 ),
+        .NAxiCuts         ( Cfg.DmaConfAmoNumCuts ),
+        .axi_req_t        ( axi_slv_req_t ),
+        .axi_rsp_t        ( axi_slv_rsp_t )
+      ) i_dma_conf_atomics (
+        .clk_i,
+        .rst_ni,
+        .axi_slv_req_i ( axi_out_req[AxiOut.dma] ),
+        .axi_slv_rsp_o ( axi_out_rsp[AxiOut.dma] ),
+        .axi_mst_req_o ( dma_amo_req ),
+        .axi_mst_rsp_i ( dma_amo_rsp )
+      );
+    end else begin : gen_no_dma_conf_atomics
+      assign dma_amo_req              = axi_out_req[AxiOut.dma];
+      assign axi_out_rsp[AxiOut.dma]  = dma_amo_rsp;
+    end
 
     axi_cut #(
       .Bypass     ( ~Cfg.DmaConfAmoPostCut ),

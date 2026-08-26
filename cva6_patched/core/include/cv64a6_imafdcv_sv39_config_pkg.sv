@@ -14,8 +14,13 @@ package cva6_config_pkg;
 
   localparam CVA6ConfigNrCommitPorts = 2;
 
+  // fp16_v3: FP64 dropped, FP16 enabled. RVD was previously tied to RVF (see
+  // the cva6_cfg struct below); it now has its own parameter so D can be
+  // dropped independently. F32 (RVF) stays -- LLVM requires scalar F for Zvfh
+  // (vector fp16), so D is the only precision tier that actually drops.
   localparam CVA6ConfigRVF = 1;
-  localparam CVA6ConfigF16En = 0;
+  localparam CVA6ConfigRVD = 0;
+  localparam CVA6ConfigF16En = 1;
   localparam CVA6ConfigF16AltEn = 0;
   localparam CVA6ConfigF8En = 0;
   localparam CVA6ConfigFVecEn = 0;
@@ -24,7 +29,13 @@ package cva6_config_pkg;
   localparam CVA6ConfigCExtEn = 1;
   localparam CVA6ConfigZcbExtEn = 0;
   localparam CVA6ConfigZcmpExtEn = 0;
-  localparam CVA6ConfigAExtEn = 1;
+  // fp16_v3 / no-atomics: the four axi_riscv_atomics_structs shims in cheshire_soc
+  // are bypassed (Cfg.AtomicsEnable=0), so an AMO/LR/SC would pass through as an
+  // ordinary AXI access and silently corrupt. Disabling A here makes it an illegal
+  // instruction instead -- a trap with a decodable mtval. Verified 2026-08-26 that
+  // no atomic exists in the three FP16 app binaries or the bootrom, so this costs
+  // nothing today; it is purely a guard. Flip both back together for Linux.
+  localparam CVA6ConfigAExtEn = 0;
   localparam CVA6ConfigBExtEn = 0;
   localparam CVA6ConfigHExtEn = 0;
   localparam CVA6ConfigVExtEn = 1;
@@ -90,7 +101,7 @@ package cva6_config_pkg;
       MemTidWidth: unsigned'(CVA6ConfigMemTidWidth),
       NrLoadBufEntries: unsigned'(CVA6ConfigNrLoadBufEntries),
       RVF: bit'(CVA6ConfigRVF),
-      RVD: bit'(CVA6ConfigRVF),
+      RVD: bit'(CVA6ConfigRVD),
       XF16: bit'(CVA6ConfigF16En),
       XF16ALT: bit'(CVA6ConfigF16AltEn),
       XF8: bit'(CVA6ConfigF8En),
