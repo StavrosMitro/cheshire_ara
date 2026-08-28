@@ -145,6 +145,12 @@ module cheshire_top_xilinx import cheshire_pkg::*; (
     // stray atomic traps instead of silently passing through as a normal access.
     // Re-enable (atomics=1) for Linux or any multi-hart / locking software.
     ret.AtomicsEnable   = `ifdef NO_ATOMICS 1'b0 `else 1'b1 `endif;
+    // RISC-V debug module. `USE_JTAG is defined nowhere for TARGET_ZCU102, so the
+    // DM has no top-level pins and is pure dead weight (~10.8k LUTs). Its 128->64
+    // isolation converter also caused the DRC LUTLP-1 loop on 2026-08-26. The
+    // crossbar port and address map are unchanged -- see cheshire_soc.sv.
+    // Build with dbg=1 to restore it (needed only if `USE_JTAG is ever defined).
+    ret.DbgEnable       = `ifdef NO_DBG 1'b0 `else 1'b1 `endif;
     // SoC AXI 64 -> 128 bit. Ara's port is AraDataWideWidth = 32*NrLanes bits
     // (= 4*NrLanes bytes/cycle, Ara's documented L2 bandwidth). At 2 lanes that
     // is 64b and matches the SoC, so the Ara<->SoC converter degenerates away.
@@ -156,17 +162,23 @@ module cheshire_top_xilinx import cheshire_pkg::*; (
     // (~18.7k LUTs at MaxReads=24), partly paying for the wider crossbar.
     // NB: gen_cva6_cfg does ret.AxiDataWidth = cfg.AxiDataWidth, so CVA6's AXI
     // widens too (DcacheLineWidth=256 -> 2 beats; no assertion constrains it).
-    // DEFERRED -- do not re-enable without doing the full port first.
-    // 128b breaks RTL elaboration: dm_csrs.sv:172 declares
-    // `logic [63:0] sbdata_q` but line 191 does sbdata_q[BusWidth-1:0], and
-    // cheshire_soc.sv:1049 passes BusWidth = Cfg.AxiDataWidth -> [127:0] out of
-    // range. riscv-dbg's system-bus access is hard-limited to 64 bit (its DMI
-    // only exposes sbdata0/sbdata1 = 2x32). Fixing it needs BusWidth(64), the
-    // dbg_sba_* signals re-typed off axi_data_t, axi_from_mem re-parameterised
-    // to 64b, and a 64->128 converter into the xbar -- i.e. surgery on the JTAG
-    // debug path. And dm_top is only the FIRST of 18 sites inheriting
-    // Cfg.AxiDataWidth (LLC, atomics, regbus, USB, slink, DMA, VGA, ...), each
-    // with its own possible width limits.
+    // RESOLVED 2026-08-26 -- 128b is LIVE and has passed synth+place+route with
+    // timing met (WNS +1.785). The old blocker is recorded here because the
+    // reasoning still applies to any other width-sensitive IP:
+    //   dm_csrs.sv:172 declares `logic [63:0] sbdata_q` but indexes it
+    //   [BusWidth-1:0], so BusWidth=128 was an out-of-range part-select. This
+    //   is not a bug: the RISC-V debug spec defines system-bus access as 32-bit
+    //   sbdata register pairs, so 64 bit is its hard architectural ceiling.
+    // First fix was to isolate the DM at 64b behind dw converters. That worked
+    // but cost 8,265 LUTs AND created a DRC LUTLP-1 combinational loop with
+    // axi_to_mem_interleaved (which ties mem_gnt_i to mem_req_o), killing the
+    // build at write_bitstream. Since `USE_JTAG is defined nowhere here, the
+    // whole DM was dead weight -- so it is now disabled outright (DbgEnable
+    // above), which removes the converters, the loop and ~10.8k LUTs together.
+    // Measured net effect of 64->128b: -20,577 (DRAM dw_converter vanishes,
+    // SoC 128 == HP0 128), -4,702 (Ara downsizer vanishes), +3,019 (wider xbar/
+    // LLC/DMA) = about -14k LUTs. NB dw_converter cost is a STEP function, not
+    // a ratio: it is either its full size or exactly zero. Check both widths.
     // The SPM/cache split itself is NOT fixed here -- cfg_spm at AmLlc+0x00 is
     // a runtime way-mask, so 0xFF (all SPM) vs 0x3F (6 SPM + 2 cache ways as
     // L2 for CVA6's 4 KiB L1I / 8 KiB L1D) can be compared on this same

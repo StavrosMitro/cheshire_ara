@@ -159,6 +159,10 @@ package cheshire_pkg;
     bit     BusErr;
     bit     Ara;
     // Parameters for Debug Module
+    // RISC-V debug module. When 0, the whole JTAG/DM subsystem is replaced by an
+    // axi_err_slv on the (unchanged) AxiOut.dbg port. Only sensible where the
+    // board brings out no JTAG pins -- see cheshire_soc.sv gen_dbg/gen_no_dbg.
+    bit     DbgEnable;
     jtag_idcode_t DbgIdCode;
     dw_bt   DbgMaxReqs;
     dw_bt   DbgMaxReadTxns;
@@ -619,6 +623,7 @@ package cheshire_pkg;
     BusErr            : 1,
     Ara               : 0,
     // Debug
+    DbgEnable         : 1,
     DbgIdCode         : CheshireIdCode,
     DbgMaxReqs        : 4,
     DbgMaxReadTxns    : 4,

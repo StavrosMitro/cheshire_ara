@@ -516,9 +516,11 @@ module cheshire_soc import cheshire_pkg::*; #(
     // This is necessary for routing in the LLC-internal interconnect.
     always_comb begin
       axi_llc_remap_req = axi_llc_cut_req;
-      if (axi_llc_cut_req.aw.addr & ~AmSpmRegionMask == AmSpmBaseUncached & ~AmSpmRegionMask)
+      // 2026-08-28 FIX (matches upstream Cheshire): the parentheses are REQUIRED.
+      // SystemVerilog binds `==` tighter than `&`
+      if ((axi_llc_cut_req.aw.addr & ~AmSpmRegionMask) == (AmSpmBaseUncached & ~AmSpmRegionMask))
         axi_llc_remap_req.aw.addr  = AmSpm | (AmSpmRegionMask & axi_llc_cut_req.aw.addr);
-      if (axi_llc_cut_req.ar.addr & ~AmSpmRegionMask == AmSpmBaseUncached & ~AmSpmRegionMask)
+      if ((axi_llc_cut_req.ar.addr & ~AmSpmRegionMask) == (AmSpmBaseUncached & ~AmSpmRegionMask))
         axi_llc_remap_req.ar.addr = AmSpm | (AmSpmRegionMask & axi_llc_cut_req.ar.addr);
       axi_llc_cut_rsp = axi_llc_remap_rsp;
     end
@@ -927,6 +929,26 @@ module cheshire_soc import cheshire_pkg::*; #(
   //  JTAG Debug Module  //
   /////////////////////////
 
+  // ==========================================================================
+  // RISC-V DEBUG MODULE -- disabled on ZCU102 (Cfg.DbgEnable = 0)
+  // ==========================================================================
+  // `USE_JTAG is defined NOWHERE for TARGET_ZCU102, so this entire subsystem
+  // has no top-level pins: nothing can ever drive the TAP, and boot_passive()
+  // loads applications via scratch registers without it. It measured 10,828
+  // LUTs of unreachable logic, and its 128->64 bit isolation converter caused
+  // the DRC LUTLP-1 combinational loop that killed the 2026-08-26 build at
+  // write_bitstream (after place+route had already MET TIMING).
+  //
+  // Disabling keeps the crossbar port AxiOut.dbg and its address rule
+  // (map[0] = AmDbg..AmDbg+0x40000) EXACTLY as they are -- gen_axi_out()
+  // hardcodes `dbg: 0` and starts its index counter at i=1, so removing the
+  // port would shift every downstream port index and address rule. Instead the
+  // port is terminated with an axi_err_slv: zero index churn, and an access to
+  // the debug region returns DECERR instead of silently reading a dead module.
+  //
+  // Keep DbgEnable=1 for RTL simulation and every non-ZCU102 board.
+  if (Cfg.DbgEnable) begin : gen_dbg
+
   localparam int unsigned NumDbgHarts = NumIntHarts + Cfg.NumExtDbgHarts;
 
   // Filter atomics and cut
@@ -1277,6 +1299,41 @@ module cheshire_soc import cheshire_pkg::*; #(
     .td_o             ( jtag_tdo_o     ),
     .tdo_oe_o         ( jtag_tdo_oe_o  )
   );
+
+  end else begin : gen_no_dbg
+
+    // Terminate the crossbar's debug port. Address map and port indices are
+    // untouched; accesses to AmDbg now return DECERR.
+    axi_err_slv #(
+      .AxiIdWidth ( AxiSlvIdWidth     ),
+      .axi_req_t  ( axi_slv_req_t     ),
+      .axi_resp_t ( axi_slv_rsp_t     ),
+      .ATOPs      ( Cfg.AtomicsEnable ),
+      .MaxTrans   ( 1                 )
+    ) i_dbg_err_slv (
+      .clk_i,
+      .rst_ni,
+      .test_i     ( test_mode_i ),
+      .slv_req_i  ( axi_out_req[AxiOut.dbg] ),
+      .slv_resp_o ( axi_out_rsp[AxiOut.dbg] )
+    );
+
+    // System Bus Access master never issues a transaction.
+    assign axi_in_req[AxiIn.dbg] = '0;
+
+    // No hart ever receives a debug request. dm_top's ndmreset_o was already
+    // left unconnected upstream, so no reset-tree tie-off is needed.
+    assign dbg_int_req   = '0;
+    assign dbg_active_o  = 1'b0;
+    assign dbg_ext_req_o = '0;
+
+    // JTAG TAP outputs (ports exist on cheshire_soc even when the board does
+    // not bring them out; cheshire_top_xilinx ties the inputs off).
+    assign jtag_tdo_o    = 1'b0;
+    assign jtag_tdo_oe_o = 1'b0;
+
+  end
+
 
   /////////////////////
   //  Register File  //
