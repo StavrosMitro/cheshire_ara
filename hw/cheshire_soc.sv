@@ -835,7 +835,18 @@ module cheshire_soc import cheshire_pkg::*; #(
         // e16 vector ops, and ara_dispatcher.sv under FPUSupportHalf rejects
         // any vsew != EW16 -- so an accidental FP32 vector op traps cleanly
         // rather than silently mis-executing.
-        .FPUSupport   ( ara_pkg::FPUSupportHalf ),
+        // Ara vector FPU precision, selected by the `fpu=` make knob:
+        //   fpu=16   (default) -> FPUSupportHalf        : FP16 only, smallest
+        //   fpu=32             -> FPUSupportSingle      : FP32 only
+        //   fpu=1632           -> FPUSupportHalfSingle  : both, larger
+        // NB this is the VECTOR unit only. CVA6's scalar FPU is separate and is
+        // governed by CVA6ConfigRVF/RVD in cv64a6_imafdcv_sv39_config_pkg.sv --
+        // and RVD there sets FLEN, which the ara_dispatcher NaN-box check now
+        // derives from CVA6Cfg (see AraScalarFLen in ara_dispatcher.sv).
+        .FPUSupport   ( `ifdef ARA_FPU_1632 ara_pkg::FPUSupportHalfSingle
+                        `elsif ARA_FPU_32   ara_pkg::FPUSupportSingle
+                        `else               ara_pkg::FPUSupportHalf
+                        `endif ),
         .CVA6Cfg      ( Cva6Cfg                ),
         .exception_t  ( exception_t            ),
         .accelerator_req_t (accelerator_req_t ),

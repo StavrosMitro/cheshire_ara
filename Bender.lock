@@ -136,9 +136,9 @@ packages:
     - common_cells
   idma:
     revision: ca1b28816a3706be0bf9ce01378246d5346384f0
-    version: 0.5.1
+    version: null
     source:
-      Git: https://github.com/pulp-platform/iDMA.git
+      Path: /home/smitropoulos/cheshire_soc/idma_patched
     dependencies:
     - axi
     - common_cells

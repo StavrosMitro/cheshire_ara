@@ -1026,7 +1026,23 @@ module issue_read_operands
 
   // pack signals
   logic [2:0][4:0] fp_raddr_pack;
-  logic [CVA6Cfg.NrCommitPorts-1:0][CVA6Cfg.XLEN-1:0] fp_wdata_pack;
+  // FIX 2026-09-01: this was [NrCommitPorts-1:0][CVA6Cfg.XLEN-1:0].
+  // The FP regfile below is instantiated with DATA_WIDTH(CVA6Cfg.FLen), so its
+  // wdata_i port is NrCommitPorts x FLen. With RVD=0 (FP64 dropped for area)
+  // FLen=32 while XLEN=64, so this pack was 2x64=128 bits driving a 2x32=64 bit
+  // port. The 128->64 connection keeps the LOW 64 bits = fp_wdata_pack[0], so
+  // the regfile saw:
+  //     wdata_i[0] = fp_wdata_pack[0][31:0]   = correct
+  //     wdata_i[1] = fp_wdata_pack[0][63:32]  = the zero-extension = ZERO
+  // i.e. ANY FP result retiring on commit port 1 was silently written as zero.
+  // waddr_pack and we_fpr_i are correctly sized, so the right register was
+  // written -- with zero. Vivado flagged it and it was ignored:
+  //   WARNING: [Synth 8-689] width (128) of port connection 'wdata_i' does not
+  //   match port width (64) of module 'ariane_regfile' [issue_read_operands.sv:1079]
+  // The integer regfile is unaffected: its DATA_WIDTH is XLEN, so wdata_pack
+  // and its port are both 128 bits. Sizing this to FLen makes the widths match.
+  // NB :1048 already slices wdata_i[i] to FLen, so it needs no change.
+  logic [CVA6Cfg.NrCommitPorts-1:0][CVA6Cfg.FLen-1:0] fp_wdata_pack;
 
   always_comb begin : assign_fp_raddr_pack
     fp_raddr_pack = {
