@@ -111,7 +111,9 @@
       "Bash(screen -S board -X stuff \"devmem 0x50000004 32 0 ; devmem 0x50000050 32 0 ; devmem 0x5FFFF010 32 0xDEADDEAD ; echo 0 > /sys/class/gpio/gpio412/value ; echo GO$\\(printf '\\\\r'\\)\")",
       "Bash(screen -S board -X stuff \"devmem 0x5FFFF010 ; devmem 0x50000050 ; devmem 0x50000004$\\(printf '\\\\r'\\)\")",
       "Bash(screen -S board -X stuff \"echo 1 > /sys/class/gpio/gpio412/value ; sync ; umount /mnt/sd && echo SD_UMOUNT_OK || umount -l /mnt/sd ; mount | grep -c /mnt/sd ; echo PARKED$\\(printf '\\\\r'\\)\")",
-      "Bash(lsblk)"
+      "Bash(lsblk)",
+      "Read(//opt/**)",
+      "Bash(env)"
     ],
     "additionalDirectories": [
       "/home/stavros/sshfs_dir",
